@@ -3,6 +3,7 @@ import { SectionCard } from "@/components/section-card";
 import { SettingRow } from "@/components/setting-row";
 import { ShortcutKey } from "@/components/shortcut-key";
 import { StatusBadge } from "@/components/status-badge";
+import { Switch } from "@/components/ui/switch";
 import { t, type UiLocale } from "@/lib/i18n";
 import type { AppSettings, AudioDeviceInfo, PlatformInfo } from "@/lib/types";
 
@@ -33,7 +34,7 @@ export function GeneralSection({
     : t(locale, "settings.systemDefault");
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-3.5">
       <SectionCard title={t(locale, "settings.readiness")}>
         <div className="divide-y divide-border/70">
           <SettingRow label="Gemini">
@@ -61,10 +62,22 @@ export function GeneralSection({
 
       <SectionCard>
         <div className="divide-y divide-border/70">
+          <SettingRow
+            label={t(locale, "settings.startWithWindows")}
+            description={t(locale, "settings.startWithWindowsDesc")}
+          >
+            <Switch
+              aria-label={t(locale, "settings.startWithWindows")}
+              checked={Boolean(settings.start_with_windows)}
+              onCheckedChange={(checked) =>
+                onUpdateImmediate({ start_with_windows: checked })
+              }
+            />
+          </SettingRow>
           <SettingRow label={t(locale, "settings.uiLanguage")}>
             <select
               aria-label={t(locale, "settings.uiLanguage")}
-              className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="h-8 rounded-md border border-input bg-background px-2.5 text-xs text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
               value={settings.ui_locale}
               onChange={(event) =>
                 onUpdateImmediate({
@@ -80,7 +93,7 @@ export function GeneralSection({
         </div>
       </SectionCard>
 
-      <Button type="button" variant="outline" onClick={onTryVoice}>
+      <Button type="button" size="sm" variant="outline" className="h-8 px-3 text-xs" onClick={onTryVoice}>
         {t(locale, "settings.tryVoice")}
       </Button>
     </div>

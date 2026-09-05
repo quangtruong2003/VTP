@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils";
 type NoticeTone = "info" | "success" | "warning" | "error";
 
 const toneClass: Record<NoticeTone, string> = {
-  info: "border-blue-400/20 bg-blue-400/8 text-blue-100",
+  info: "border-zinc-800 bg-zinc-900/60 text-zinc-300",
   success: "border-emerald-400/20 bg-emerald-400/8 text-emerald-100",
   warning: "border-amber-400/20 bg-amber-400/8 text-amber-100",
   error: "border-red-400/20 bg-red-400/8 text-red-100",

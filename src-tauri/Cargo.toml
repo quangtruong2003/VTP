@@ -1,6 +1,6 @@
 [package]
 name = "voice-to-prompt"
-version = "0.1.0"
+version = "0.1.1"
 description = "Global voice-to-prompt AI assistant"
 authors = ["you"]
 edition = "2021"
@@ -19,6 +19,7 @@ tauri-plugin-global-shortcut = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 keyring = { version = "3", features = ["windows-native"] }
@@ -43,12 +44,11 @@ windows-sys = { version = "0.59", features = [
   "Win32_UI_Input_KeyboardAndMouse",
 ] }
 
-[target."cfg(not(any(target_os = \"android\", target_os = \"ios\")))".dependencies]
-tauri-plugin-autostart = "2"
 
 [profile.release]
-codegen-units = 1
-lto = true
-opt-level = "s"
+opt-level = 1
 panic = "abort"
 strip = true
+
+
+

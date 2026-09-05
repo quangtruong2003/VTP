@@ -23,8 +23,6 @@ pub fn run() {
     let session_manager = Arc::new(session::SessionManager::new());
     let mic_test_manager = Arc::new(mic_test::MicTestManager::new());
 
-    let settings_for_shortcut = settings_store.get().shortcut.clone();
-
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|_app, _args, _cwd| {
             // second launch attempt: surface the settings window
@@ -36,6 +34,12 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(
+            tauri_plugin_autostart::Builder::new()
+                .app_name("Voice to Prompt")
+                .arg("--autostart")
+                .build(),
+        )
         .manage(settings_store.clone())
         .manage(history_store.clone())
         .manage(session_manager.clone())
@@ -51,6 +55,8 @@ pub fn run() {
             commands::set_shortcut,
             commands::set_process_shortcut,
             commands::set_cancel_shortcut,
+            commands::set_history_shortcut,
+            commands::set_settings_shortcut,
             commands::platform_info,
             commands::connect_api_key,
             commands::delete_api_key,
@@ -69,25 +75,46 @@ pub fn run() {
             commands::history_list,
             commands::history_copy,
             commands::history_clear,
+            commands::history_delete,
+            commands::history_insert,
+            commands::open_history,
+            commands::close_history,
             commands::open_settings,
             commands::test_text_insertion,
             commands::set_start_recording_on_open,
+            commands::set_start_with_windows,
             commands::get_transcript_hint,
         ])
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .setup(move |app| {
             // ---- Tray ----
             let settings_snapshot = settings_store.get();
             tray::install(app, &settings_snapshot)?;
 
+            // ---- Autostart sync ----
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            {
+                use tauri_plugin_autostart::ManagerExt;
+                if settings_snapshot.start_with_windows {
+                    let _ = app.autolaunch().enable();
+                }
+            }
+
             // ---- Global shortcut ----
-            shortcut::reregister(&app.handle(), &settings_for_shortcut)
+            shortcut::reregister(&app.handle(), &settings_snapshot)
                 .map_err(|e| {
                     eprintln!("shortcut registration failed: {e}");
                 })
                 .ok();
 
-            // ---- Onboarding: show settings on first run (no API key) ----
-            if !settings_store.api_key_set() {
+            // ---- Onboarding: show settings on first run (no API key, not launched via autostart) ----
+            let is_autostart = std::env::args().any(|arg| arg == "--autostart");
+            if !is_autostart && !settings_store.api_key_set() {
                 if let Some(w) = app.get_webview_window("settings") {
                     let _ = w.show();
                     let _ = w.set_focus();

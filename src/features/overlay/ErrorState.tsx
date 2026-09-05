@@ -41,17 +41,17 @@ export function ErrorState({
 }) {
   const settingsAction = shouldOpenSettings(error.code);
   return (
-    <div className="flex h-full flex-col gap-2.5 px-4 py-3.5">
+    <div className="flex h-full flex-col gap-2 p-3 select-none">
       <div className="flex items-start gap-2.5">
-        <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-red-400/10 text-red-300">
+        <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full border border-red-500/30 bg-red-500/15 text-red-400">
           <AlertCircle className="size-3.5" />
         </span>
         <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold text-foreground">{t(locale, titleKeys[error.code])}</div>
+          <div className="text-xs font-semibold text-zinc-100">{t(locale, titleKeys[error.code])}</div>
           {error.detail ? (
-            <details className="mt-1.5 text-[11px] text-muted-foreground">
+            <details className="mt-1 text-[10px] text-zinc-400">
               <summary className="cursor-pointer select-none">{t(locale, "overlay.details")}</summary>
-              <div className="mt-1 max-h-16 overflow-auto whitespace-pre-wrap rounded-md bg-secondary/45 px-2 py-1.5 font-mono text-[10px] leading-4">
+              <div className="mt-1 max-h-12 overflow-auto whitespace-pre-wrap rounded-md bg-zinc-900 border border-zinc-800 px-2 py-1 font-mono text-[10px] leading-4 text-zinc-300">
                 {error.detail}
               </div>
             </details>
@@ -62,12 +62,13 @@ export function ErrorState({
         <Button
           size="icon"
           variant="ghost"
+          className="size-7 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
           onClick={onHide}
           aria-label={t(locale, "overlay.close")}
         >
           <X className="size-3.5" />
         </Button>
-        <Button size="sm" variant="outline" onClick={settingsAction ? onOpenSettings : onRetry}>
+        <Button size="sm" variant="outline" className="h-7 px-2.5 text-xs border-zinc-700 bg-zinc-900 text-zinc-200 hover:bg-zinc-800" onClick={settingsAction ? onOpenSettings : onRetry}>
           {settingsAction ? <Settings2 className="size-3.5" /> : <RefreshCw className="size-3.5" />}
           {t(locale, settingsAction ? "overlay.openSettings" : "overlay.retry")}
         </Button>

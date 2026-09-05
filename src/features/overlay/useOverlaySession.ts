@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import { onOverlayDismiss, onOverlayState, overlayApi } from "@/lib/overlay";
 import type { OverlayViewModel } from "@/lib/types";
 import { initialOverlayModel, reduceOverlayAction } from "./overlayReducer";
@@ -7,11 +7,18 @@ export const PROCESSING_HINT_MS = 2_500;
 export const PROCESSING_CANCEL_MS = 8_000;
 export const INSERTED_DISMISS_MS = 750;
 
+type PendingCommand = "pause" | "process" | "cancel";
+
 export function useOverlaySession() {
   const [baseModel, dispatch] = useReducer(reduceOverlayAction, initialOverlayModel);
-  const [processingElapsedMs, setProcessingElapsedMs] = useState(0);
-  const [pointerInteracting, setPointerInteracting] = useState(false);
+  const [processingElapsedMs, setProcessingElapsedMs] = useReducer(
+    (_current: number, next: number) => next,
+    0,
+  );
   const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const commandRefs = useRef<Partial<Record<PendingCommand, { sessionId: number; request: Promise<void> }>>>({});
+  const processingSessionRef = useRef<number | null>(null);
+  const cancelledSessionRef = useRef<number | null>(null);
   const modelRef = useRef(baseModel);
   modelRef.current = baseModel;
 
@@ -47,11 +54,20 @@ export function useOverlaySession() {
       setProcessingElapsedMs(0);
       return;
     }
-    const startedAt = performance.now();
+
     setProcessingElapsedMs(0);
-    const update = () => setProcessingElapsedMs(Math.max(0, performance.now() - startedAt));
-    const timer = setInterval(update, 100);
-    return () => clearInterval(timer);
+    const hintTimer = window.setTimeout(
+      () => setProcessingElapsedMs(PROCESSING_HINT_MS),
+      PROCESSING_HINT_MS,
+    );
+    const cancelTimer = window.setTimeout(
+      () => setProcessingElapsedMs(PROCESSING_CANCEL_MS),
+      PROCESSING_CANCEL_MS,
+    );
+    return () => {
+      window.clearTimeout(hintTimer);
+      window.clearTimeout(cancelTimer);
+    };
   }, [processingKey, isProcessing]);
 
   useEffect(() => {
@@ -74,7 +90,7 @@ export function useOverlaySession() {
         dismissTimerRef.current = null;
       }
     };
-  }, [baseModel.autoDismissEligible, baseModel.lifecycle, baseModel.sessionId, phase]);
+  }, [baseModel.autoDismissEligible, baseModel.lifecycle, baseModel.sessionId]);
 
   const model = useMemo<OverlayViewModel>(
     () => ({
@@ -86,15 +102,45 @@ export function useOverlaySession() {
     [baseModel, isProcessing, processingElapsedMs],
   );
 
+  const runOnce = useCallback((key: PendingCommand, command: () => Promise<void>) => {
+    const sessionId = modelRef.current.sessionId;
+    const pending = commandRefs.current[key];
+    if (pending?.sessionId === sessionId) return pending.request;
+
+    const request = command();
+    commandRefs.current[key] = { sessionId, request };
+    void request.then(
+      () => {
+        if (commandRefs.current[key]?.request === request) delete commandRefs.current[key];
+      },
+      () => {
+        if (commandRefs.current[key]?.request === request) delete commandRefs.current[key];
+      },
+    );
+    return request;
+  }, []);
+
   const startRecording = useCallback(() => overlayApi.startRecording(), []);
-  const togglePause = useCallback(() => overlayApi.togglePause(), []);
-  const processRecording = useCallback(() => overlayApi.processRecording(), []);
+  const togglePause = useCallback(
+    () => runOnce("pause", overlayApi.togglePause),
+    [runOnce],
+  );
+  const processRecording = useCallback(() => {
+    const sessionId = modelRef.current.sessionId;
+    if (processingSessionRef.current === sessionId || cancelledSessionRef.current === sessionId) {
+      return Promise.resolve();
+    }
+    processingSessionRef.current = sessionId;
+    return runOnce("process", overlayApi.processRecording);
+  }, [runOnce]);
   const cancel = useCallback(() => {
     const sessionId = modelRef.current.sessionId;
-    const cancellation = overlayApi.cancel();
+    if (cancelledSessionRef.current === sessionId) return Promise.resolve();
+    cancelledSessionRef.current = sessionId;
+    const cancellation = runOnce("cancel", overlayApi.cancel);
     dispatch({ type: "dismiss_start", sessionId });
     return cancellation;
-  }, []);
+  }, [runOnce]);
   const retry = useCallback(() => overlayApi.retry(), []);
   const hide = useCallback(() => {
     dispatch({ type: "dismiss_start", sessionId: modelRef.current.sessionId });
@@ -127,7 +173,5 @@ export function useOverlaySession() {
     completeExit,
     openSettings,
     copyText,
-    pointerInteracting,
-    setPointerInteracting,
   };
 }

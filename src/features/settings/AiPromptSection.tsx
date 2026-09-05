@@ -115,26 +115,26 @@ export function AiPromptSection({
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-3.5">
       <SectionCard
         title={t(locale, "settings.aiConnection")}
         description={t(locale, "settings.aiConnectionDesc")}
       >
-        <div className="space-y-3">
+        <div className="space-y-2.5">
           {connected && !replaceMode ? (
             <div className="flex items-center justify-between gap-4">
               <StatusBadge tone="success">{t(locale, "settings.connected")}</StatusBadge>
               <div className="flex items-center gap-2">
-                <Button type="button" size="sm" variant="outline" onClick={() => setReplaceMode(true)}>
+                <Button type="button" size="sm" variant="outline" className="h-7 px-2.5 text-xs" onClick={() => setReplaceMode(true)}>
                   {t(locale, "settings.replace")}
                 </Button>
-                <Button type="button" size="sm" variant="ghost" onClick={() => void disconnect()}>
+                <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => void disconnect()}>
                   {t(locale, "settings.disconnect")}
                 </Button>
               </div>
             </div>
           ) : (
-            <div className="space-y-3">
+            <div className="space-y-2.5">
               <div className="flex gap-2">
                 <input
                   type="password"
@@ -142,26 +142,27 @@ export function AiPromptSection({
                   placeholder="AIza…"
                   value={apiKey}
                   onChange={(event) => setApiKey(event.target.value)}
-                  className="h-9 min-w-0 flex-1 rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 />
-                <Button type="button" onClick={() => void connect()} disabled={!apiKey.trim()}>
+                <Button type="button" size="sm" className="h-8 px-3 text-xs" onClick={() => void connect()} disabled={!apiKey.trim()}>
                   {connected ? t(locale, "settings.replace") : t(locale, "settings.connect")}
                 </Button>
                 {replaceMode ? (
-                  <Button type="button" variant="ghost" onClick={() => setReplaceMode(false)}>
+                  <Button type="button" size="sm" variant="ghost" className="h-8 px-2.5 text-xs" onClick={() => setReplaceMode(false)}>
                     {t(locale, "overlay.cancel")}
                   </Button>
                 ) : null}
               </div>
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-                <span>{t(locale, "settings.apiKeySecurity")}</span>
+                <span className="text-[11px]">{t(locale, "settings.apiKeySecurity")}</span>
                 <Button
                   type="button"
                   size="sm"
                   variant="ghost"
+                  className="h-6 px-2 text-[11px]"
                   onClick={() => void openUrl("https://aistudio.google.com/app/apikey")}
                 >
-                  <ExternalLink className="size-3.5" aria-hidden="true" />
+                  <ExternalLink className="size-3 shrink-0" aria-hidden="true" />
                   {t(locale, "settings.getApiKey")}
                 </Button>
               </div>
@@ -175,9 +176,9 @@ export function AiPromptSection({
 
       {connected ? (
         <SectionCard>
-          <div className="space-y-5">
-            <div className="space-y-2">
-              <label htmlFor="ai-model" className="text-sm font-medium">
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <label htmlFor="ai-model" className="text-xs font-medium">
                 {t(locale, "settings.model")}
               </label>
               <select
@@ -186,7 +187,7 @@ export function AiPromptSection({
                 value={settings.model}
                 disabled={modelsLoading || models.length === 0}
                 onChange={(event) => onUpdateImmediate({ model: event.target.value })}
-                className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+                className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
               >
                 {models.length === 0 ? (
                   <option value={settings.model}>
@@ -200,7 +201,7 @@ export function AiPromptSection({
                 ))}
               </select>
               {selectedModel ? (
-                <p className="text-xs leading-5 text-muted-foreground">
+                <p className="text-[11px] leading-4 text-muted-foreground">
                   <span className="font-mono">{selectedModel.name}</span>
                   {selectedModel.description ? ` · ${selectedModel.description}` : ""}
                 </p>
@@ -208,34 +209,34 @@ export function AiPromptSection({
             </div>
 
             {/* Fallback models configuration */}
-            <div className="space-y-2.5 rounded-lg border border-border/60 bg-muted/20 p-3.5">
+            <div className="space-y-2 rounded-lg border border-border/60 bg-muted/20 p-2.5">
               <div>
-                <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                <label className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
                   {t(locale, "settings.fallbackModels")}
                 </label>
-                <p className="mt-0.5 text-xs text-muted-foreground">
+                <p className="mt-0.5 text-[11px] text-muted-foreground">
                   {t(locale, "settings.fallbackModelsDesc")}
                 </p>
               </div>
 
               {fallbackList.length > 0 ? (
-                <div className="space-y-1.5">
+                <div className="space-y-1">
                   {fallbackList.map((modelName, index) => {
                     const fallbackInfo = models.find((m) => m.name === modelName);
                     return (
                       <div
                         key={`${modelName}-${index}`}
-                        className="flex items-center justify-between gap-3 rounded-md border border-border/80 bg-background/80 px-2.5 py-1.5 text-sm shadow-xs"
+                        className="flex items-center justify-between gap-2.5 rounded-md border border-border/80 bg-background/80 px-2 py-1 text-xs shadow-xs"
                       >
-                        <div className="flex items-center gap-2 overflow-hidden">
-                          <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[11px] font-semibold text-primary">
+                        <div className="flex items-center gap-1.5 overflow-hidden">
+                          <span className="flex size-3.5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[10px] font-semibold text-primary">
                             {index + 1}
                           </span>
                           <div className="min-w-0">
                             <span className="truncate font-medium text-xs">
                               {fallbackInfo?.display_name || modelName}
                             </span>
-                            <span className="ml-1.5 truncate font-mono text-[11px] text-muted-foreground">
+                            <span className="ml-1 truncate font-mono text-[10px] text-muted-foreground">
                               ({modelName})
                             </span>
                           </div>
@@ -245,10 +246,10 @@ export function AiPromptSection({
                           size="sm"
                           variant="ghost"
                           onClick={() => removeFallback(index)}
-                          className="h-7 w-7 p-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive shrink-0"
+                          className="h-6 w-6 p-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive shrink-0"
                           title={t(locale, "settings.remove")}
                         >
-                          <Trash2 className="size-3.5" />
+                          <Trash2 className="size-3" />
                           <span className="sr-only">{t(locale, "settings.remove")}</span>
                         </Button>
                       </div>
@@ -256,13 +257,13 @@ export function AiPromptSection({
                   })}
                 </div>
               ) : (
-                <p className="text-xs italic text-muted-foreground">
+                <p className="text-[11px] italic text-muted-foreground">
                   {t(locale, "settings.noFallbackModels")}
                 </p>
               )}
 
               {availableForFallback.length > 0 ? (
-                <div className="pt-1">
+                <div className="pt-0.5">
                   <select
                     aria-label={t(locale, "settings.addFallbackModel")}
                     value=""
@@ -271,7 +272,7 @@ export function AiPromptSection({
                         addFallback(e.target.value);
                       }
                     }}
-                    className="h-8 w-full rounded-md border border-dashed border-input bg-background/50 px-2.5 text-xs text-muted-foreground outline-none hover:border-solid hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                    className="h-7 w-full rounded-md border border-dashed border-input bg-background/50 px-2 text-xs text-muted-foreground outline-none hover:border-solid hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <option value="" disabled>
                       + {t(locale, "settings.addFallbackModel")}…
@@ -286,13 +287,13 @@ export function AiPromptSection({
               ) : null}
             </div>
 
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <label htmlFor="system-prompt" className="text-sm font-medium">
+                  <label htmlFor="system-prompt" className="text-xs font-medium">
                     {t(locale, "settings.instructionsForAi")}
                   </label>
-                  <p className="mt-1 text-xs text-muted-foreground">
+                  <p className="mt-0.5 text-[11px] text-muted-foreground">
                     {t(locale, "settings.instructionsForAiDesc")}
                   </p>
                 </div>
@@ -300,6 +301,7 @@ export function AiPromptSection({
                   type="button"
                   size="sm"
                   variant="ghost"
+                  className="h-6 px-2 text-xs"
                   onClick={() => onUpdateDebounced({ system_prompt: DEFAULT_SYSTEM_PROMPT })}
                 >
                   {t(locale, "settings.restoreDefault")}
@@ -308,10 +310,10 @@ export function AiPromptSection({
               <textarea
                 id="system-prompt"
                 aria-label={t(locale, "settings.instructionsForAi")}
-                rows={7}
+                rows={4}
                 value={settings.system_prompt}
                 onChange={(event) => onUpdateDebounced({ system_prompt: event.target.value })}
-                className="w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm leading-5 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="w-full resize-none rounded-md border border-input bg-background px-2.5 py-1.5 text-xs leading-relaxed outline-none focus-visible:ring-2 focus-visible:ring-ring"
               />
             </div>
 
@@ -320,7 +322,7 @@ export function AiPromptSection({
                 aria-label={t(locale, "settings.responseLanguage")}
                 value={settings.language}
                 onChange={(event) => onUpdateImmediate({ language: event.target.value })}
-                className="h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="h-8 rounded-md border border-input bg-background px-2.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <option value="auto">{t(locale, "settings.responseLanguageAuto")}</option>
                 {RESPONSE_LANGUAGES.map(([value, code]) => (

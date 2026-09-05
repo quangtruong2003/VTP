@@ -14,6 +14,8 @@ const settings: AppSettings = {
   shortcut: "Ctrl+Shift+Space",
   process_shortcut: "Enter",
   cancel_shortcut: "Escape",
+  history_shortcut: "Alt+V",
+  settings_shortcut: "Alt+S",
   copy_to_clipboard: true,
   paste_automatically: true,
   device_name: null,
@@ -32,11 +34,15 @@ function renderSection(overrides: {
   setRecord?: (shortcut: string) => Promise<PublicSettings>;
   setProcess?: (shortcut: string) => Promise<PublicSettings>;
   setCancel?: (shortcut: string) => Promise<PublicSettings>;
+  setHistory?: (shortcut: string) => Promise<PublicSettings>;
+  setSettings?: (shortcut: string) => Promise<PublicSettings>;
   onCommitted?: (snapshot: PublicSettings) => void;
 } = {}) {
   const setRecord = overrides.setRecord ?? vi.fn(async (shortcut: string) => returned({ shortcut }));
   const setProcess = overrides.setProcess ?? vi.fn(async (shortcut: string) => returned({ process_shortcut: shortcut }));
   const setCancel = overrides.setCancel ?? vi.fn(async (shortcut: string) => returned({ cancel_shortcut: shortcut }));
+  const setHistory = overrides.setHistory ?? vi.fn(async (shortcut: string) => returned({ history_shortcut: shortcut }));
+  const setSettings = overrides.setSettings ?? vi.fn(async (shortcut: string) => returned({ settings_shortcut: shortcut }));
   render(
     <ShortcutSection
       settings={settings}
@@ -45,10 +51,12 @@ function renderSection(overrides: {
       onSetShortcut={setRecord}
       onSetProcessShortcut={setProcess}
       onSetCancelShortcut={setCancel}
+      onSetHistoryShortcut={setHistory}
+      onSetSettingsShortcut={setSettings}
       onCommitted={overrides.onCommitted ?? (() => {})}
     />,
   );
-  return { setRecord, setProcess, setCancel };
+  return { setRecord, setProcess, setCancel, setHistory, setSettings };
 }
 
 describe("ShortcutSection", () => {
@@ -104,5 +112,35 @@ describe("ShortcutSection", () => {
     expect(screen.getByText("Space")).toBeInTheDocument();
     expect(screen.queryByText("K")).not.toBeInTheDocument();
     expect(screen.getByText(/Windows/i)).toBeInTheDocument();
+  });
+
+  it("commits a valid history shortcut from the returned backend snapshot", async () => {
+    const onCommitted = vi.fn();
+    const setHistory = vi.fn(async () => returned({ history_shortcut: "Ctrl+Alt+H" }));
+    renderSection({ setHistory, onCommitted });
+
+    await userEvent.click(screen.getByRole("button", { name: /change shortcut.*history window/i }));
+    await userEvent.keyboard("{Control>}{Alt>}h{/Alt}{/Control}");
+
+    expect(setHistory).toHaveBeenCalledWith("Ctrl+Alt+H");
+    expect(await screen.findByText("H")).toBeInTheDocument();
+    expect(onCommitted).toHaveBeenCalledWith(
+      expect.objectContaining({ history_shortcut: "Ctrl+Alt+H" }),
+    );
+  });
+
+  it("commits a valid settings shortcut from the returned backend snapshot", async () => {
+    const onCommitted = vi.fn();
+    const setSettings = vi.fn(async () => returned({ settings_shortcut: "Ctrl+Alt+S" }));
+    renderSection({ setSettings, onCommitted });
+
+    await userEvent.click(screen.getByRole("button", { name: /change shortcut.*settings window/i }));
+    await userEvent.keyboard("{Control>}{Alt>}s{/Alt}{/Control}");
+
+    expect(setSettings).toHaveBeenCalledWith("Ctrl+Alt+S");
+    expect(await screen.findByText("S")).toBeInTheDocument();
+    expect(onCommitted).toHaveBeenCalledWith(
+      expect.objectContaining({ settings_shortcut: "Ctrl+Alt+S" }),
+    );
   });
 });

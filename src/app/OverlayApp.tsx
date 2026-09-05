@@ -29,7 +29,6 @@ export function OverlayApp() {
     completeExit,
     openSettings,
     copyText,
-    setPointerInteracting,
   } = useOverlaySession();
   const [shortcut, setShortcut] = useState(DEFAULT_SHORTCUT);
   const [processShortcut, setProcessShortcut] = useState(DEFAULT_PROCESS_SHORTCUT);
@@ -39,12 +38,17 @@ export function OverlayApp() {
   );
 
   useEffect(() => {
+    let active = true;
     void settingsApi.get().then((settings) => {
+      if (!active) return;
       setShortcut(settings.shortcut || DEFAULT_SHORTCUT);
       setProcessShortcut(settings.process_shortcut || DEFAULT_PROCESS_SHORTCUT);
       setCancelShortcut(settings.cancel_shortcut || DEFAULT_CANCEL_SHORTCUT);
       setLocale(resolveUiLocale(settings.ui_locale, navigator.language));
     }).catch(() => {});
+    return () => {
+      active = false;
+    };
   }, [model.sessionId]);
 
   const state = model.state;
@@ -151,8 +155,6 @@ export function OverlayApp() {
     <OverlayShell
       lifecycle={model.lifecycle}
       onExitComplete={() => void completeExit()}
-      onPointerEnter={() => setPointerInteracting(true)}
-      onPointerLeave={() => setPointerInteracting(false)}
     >
       <div key={`${model.sessionId}:${visualPhase}`} className="overlay-state-content h-full w-full">
         {content}

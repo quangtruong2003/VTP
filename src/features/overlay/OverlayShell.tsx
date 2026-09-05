@@ -57,7 +57,7 @@ export function OverlayShell({
       onAnimationEnd={handleAnimationEnd}
       onPointerEnter={onPointerEnter}
       onPointerLeave={onPointerLeave}
-      className="overlay-surface h-screen w-screen overflow-hidden rounded-[16px] border border-border bg-[color-mix(in_oklab,var(--surface-1)_96%,black)] shadow-[0_10px_28px_rgba(0,0,0,0.30),0_1px_6px_rgba(0,0,0,0.24)]"
+      className="overlay-surface h-screen w-screen overflow-hidden rounded-[24px] border border-zinc-800/90 bg-zinc-950/95 backdrop-blur-md shadow-[0_8px_30px_rgba(0,0,0,0.6)] select-none"
     >
       <div data-tauri-drag-region className="h-full w-full">
         {children}

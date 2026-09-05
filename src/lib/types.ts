@@ -15,6 +15,8 @@ export interface AppSettings {
   shortcut: string;
   process_shortcut: string;
   cancel_shortcut: string;
+  history_shortcut?: string;
+  settings_shortcut?: string;
   copy_to_clipboard: boolean;
   paste_automatically: boolean;
   device_name: string | null;
@@ -22,6 +24,7 @@ export interface AppSettings {
   start_recording_on_open: boolean;
   ui_locale: "system" | "vi" | "en";
   fallback_models?: string[];
+  start_with_windows?: boolean;
 }
 
 export interface PublicSettings extends AppSettings {

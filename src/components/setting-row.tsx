@@ -10,11 +10,11 @@ interface SettingRowProps {
 
 export function SettingRow({ label, description, children, className }: SettingRowProps) {
   return (
-    <div className={cn("flex min-h-16 items-center justify-between gap-6 py-3", className)}>
+    <div className={cn("flex min-h-11 items-center justify-between gap-4 py-1.5", className)}>
       <div className="min-w-0 flex-1">
-        <div className="text-sm font-medium text-foreground">{label}</div>
+        <div className="text-xs font-medium text-foreground">{label}</div>
         {description ? (
-          <div className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">{description}</div>
+          <div className="mt-0.5 max-w-xl text-[11px] leading-4 text-muted-foreground">{description}</div>
         ) : null}
       </div>
       <div className="shrink-0">{children}</div>

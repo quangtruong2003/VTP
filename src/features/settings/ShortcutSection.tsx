@@ -14,7 +14,7 @@ import {
 } from "./shortcut";
 
 type CaptureError = "missing_modifier" | "unsupported" | "conflict" | null;
-type ShortcutKind = "record" | "process" | "cancel";
+type ShortcutKind = "record" | "process" | "cancel" | "history" | "settings";
 type ShortcutSetter = (shortcut: string) => Promise<PublicSettings>;
 
 function conflictHintKey(os: PlatformInfo["os"]) {
@@ -23,6 +23,10 @@ function conflictHintKey(os: PlatformInfo["os"]) {
   return "settings.shortcutConflictLinux" as const;
 }
 
+const isGlobalShortcut = (kind: ShortcutKind) => {
+  return kind === "record" || kind === "history" || kind === "settings";
+};
+
 export function ShortcutSection({
   settings,
   platformInfo,
@@ -30,6 +34,8 @@ export function ShortcutSection({
   onSetShortcut,
   onSetProcessShortcut,
   onSetCancelShortcut,
+  onSetHistoryShortcut,
+  onSetSettingsShortcut,
   onCommitted,
 }: {
   settings: AppSettings;
@@ -38,12 +44,16 @@ export function ShortcutSection({
   onSetShortcut: ShortcutSetter;
   onSetProcessShortcut: ShortcutSetter;
   onSetCancelShortcut: ShortcutSetter;
+  onSetHistoryShortcut: ShortcutSetter;
+  onSetSettingsShortcut: ShortcutSetter;
   onCommitted: (snapshot: PublicSettings) => void;
 }) {
   const [displayed, setDisplayed] = useState({
     record: settings.shortcut,
     process: settings.process_shortcut,
     cancel: settings.cancel_shortcut,
+    history: settings.history_shortcut ?? "Alt+V",
+    settings: settings.settings_shortcut ?? "Alt+S",
   });
   const [capturing, setCapturing] = useState<ShortcutKind | null>(null);
   const [pending, setPending] = useState(false);
@@ -55,8 +65,16 @@ export function ShortcutSection({
       record: settings.shortcut,
       process: settings.process_shortcut,
       cancel: settings.cancel_shortcut,
+      history: settings.history_shortcut ?? "Alt+V",
+      settings: settings.settings_shortcut ?? "Alt+S",
     });
-  }, [settings.shortcut, settings.process_shortcut, settings.cancel_shortcut]);
+  }, [
+    settings.shortcut,
+    settings.process_shortcut,
+    settings.cancel_shortcut,
+    settings.history_shortcut,
+    settings.settings_shortcut,
+  ]);
 
   useEffect(() => {
     if (capturing) captureRef.current?.focus();
@@ -76,6 +94,8 @@ export function ShortcutSection({
   const setterFor = (kind: ShortcutKind): ShortcutSetter => {
     if (kind === "process") return onSetProcessShortcut;
     if (kind === "cancel") return onSetCancelShortcut;
+    if (kind === "history") return onSetHistoryShortcut;
+    if (kind === "settings") return onSetSettingsShortcut;
     return onSetShortcut;
   };
 
@@ -84,16 +104,16 @@ export function ShortcutSection({
     event.preventDefault();
     event.stopPropagation();
 
-    // Preserve Escape-to-exit for the global record binding. For the two
-    // session actions Escape is a valid, configurable shortcut itself.
-    if (event.key === "Escape" && capturing === "record") {
+    // Preserve Escape-to-exit for the global system bindings (record, history, settings).
+    // For the two session actions (process, cancel), Escape is a valid, configurable shortcut itself.
+    if (event.key === "Escape" && isGlobalShortcut(capturing)) {
       cancelCapture();
       return;
     }
 
     const candidate = candidateFromKeyboardEvent(event.nativeEvent);
     const validation = validateCandidate(candidate, {
-      allowUnmodified: capturing !== "record",
+      allowUnmodified: !isGlobalShortcut(capturing),
     });
     if (!validation.ok) {
       if (validation.reason === "modifier_only") return;
@@ -111,6 +131,8 @@ export function ShortcutSection({
         record: snapshot.shortcut,
         process: snapshot.process_shortcut,
         cancel: snapshot.cancel_shortcut,
+        history: snapshot.history_shortcut ?? "Alt+V",
+        settings: snapshot.settings_shortcut ?? "Alt+S",
       });
       onCommitted(snapshot);
       setCapturing(null);
@@ -146,21 +168,33 @@ export function ShortcutSection({
       description: t(locale, "settings.cancelShortcutDesc"),
       value: displayed.cancel,
     },
+    {
+      kind: "history",
+      label: t(locale, "settings.historyShortcut"),
+      description: t(locale, "settings.historyShortcutDesc"),
+      value: displayed.history,
+    },
+    {
+      kind: "settings",
+      label: t(locale, "settings.settingsShortcut"),
+      description: t(locale, "settings.settingsShortcutDesc"),
+      value: displayed.settings,
+    },
   ];
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <SectionCard
         title={t(locale, "settings.shortcut")}
         description={t(locale, "settings.shortcutDesc")}
       >
         <div className="divide-y divide-border/70">
           {rows.map((row) => (
-            <div key={row.kind} className="py-4 first:pt-0 last:pb-0">
-              <div className="flex items-center justify-between gap-5">
+            <div key={row.kind} className="py-2.5 first:pt-0 last:pb-0">
+              <div className="flex items-center justify-between gap-4">
                 <div className="min-w-0">
-                  <div className="text-sm font-medium text-foreground">{row.label}</div>
-                  <div className="mt-1 text-xs leading-5 text-muted-foreground">
+                  <div className="text-xs font-medium text-foreground">{row.label}</div>
+                  <div className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
                     {row.description}
                   </div>
                 </div>
@@ -174,6 +208,7 @@ export function ShortcutSection({
                     type="button"
                     size="sm"
                     variant="outline"
+                    className="h-7 px-2.5 text-xs"
                     aria-label={`${t(locale, "settings.changeShortcut")} — ${row.label}`}
                     onClick={() => startCapture(row.kind)}
                   >
@@ -183,20 +218,20 @@ export function ShortcutSection({
               </div>
 
               {capturing === row.kind ? (
-                <div className="mt-3 flex items-center gap-2">
+                <div className="mt-2 flex items-center gap-2">
                   <div
                     ref={captureRef}
                     tabIndex={0}
                     role="group"
                     aria-label={`${t(locale, "settings.captureShortcut")} — ${row.label}`}
                     onKeyDown={(event) => void handleKeyDown(event)}
-                    className="flex min-h-20 flex-1 items-center gap-3 rounded-xl border border-primary/40 bg-primary/5 px-4 outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring"
+                    className="flex min-h-14 flex-1 items-center gap-2.5 rounded-lg border border-zinc-500/60 bg-zinc-900/90 px-3 py-2 outline-none ring-offset-background focus-visible:ring-1 focus-visible:ring-zinc-400"
                   >
-                    <Keyboard className="size-5 text-primary" aria-hidden="true" />
+                    <Keyboard className="size-4 text-zinc-200 shrink-0" aria-hidden="true" />
                     <div className="min-w-0">
-                      <p className="text-sm font-medium">{t(locale, "settings.captureShortcut")}</p>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        {row.kind === "record"
+                      <p className="text-xs font-medium">{t(locale, "settings.captureShortcut")}</p>
+                      <p className="mt-0.5 text-[11px] text-muted-foreground">
+                        {isGlobalShortcut(row.kind)
                           ? platformInfo.os === "macos"
                             ? "⌘ / ⌥ / ⇧ + key"
                             : "Ctrl / Alt / Shift + key"
@@ -204,7 +239,7 @@ export function ShortcutSection({
                       </p>
                     </div>
                   </div>
-                  <Button type="button" size="sm" variant="ghost" onClick={cancelCapture}>
+                  <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={cancelCapture}>
                     {t(locale, "settings.cancelClear")}
                   </Button>
                 </div>

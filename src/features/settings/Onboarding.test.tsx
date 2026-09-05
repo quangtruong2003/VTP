@@ -39,6 +39,8 @@ function props(overrides: Partial<React.ComponentProps<typeof Onboarding>> = {})
     onSetShortcut: vi.fn(async (shortcut: string) => snapshot(shortcut)),
     onSetProcessShortcut: vi.fn(async (shortcut: string) => ({ ...settings, process_shortcut: shortcut })),
     onSetCancelShortcut: vi.fn(async (shortcut: string) => ({ ...settings, cancel_shortcut: shortcut })),
+    onSetHistoryShortcut: vi.fn(async (shortcut: string) => ({ ...settings, history_shortcut: shortcut })),
+    onSetSettingsShortcut: vi.fn(async (shortcut: string) => ({ ...settings, settings_shortcut: shortcut })),
     onShortcutCommitted: vi.fn(),
     onTryNow: vi.fn(),
     ...overrides,

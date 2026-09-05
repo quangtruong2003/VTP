@@ -33,10 +33,10 @@ export function SettingsShell({
     <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground">
       <SettingsSidebar section={section} onSectionChange={onSectionChange} locale={locale} />
       <main className="min-w-0 flex-1 overflow-y-auto">
-        <div className="mx-auto w-full max-w-[608px] px-6 py-6">
-          <header className="mb-5 flex min-h-8 items-center justify-between gap-4">
-            <h1 className="text-lg font-semibold tracking-tight">{t(locale, titleKey[section])}</h1>
-            <div className="min-h-7 text-xs text-muted-foreground" aria-live="polite">
+        <div className="mx-auto w-full max-w-[540px] px-4 py-4">
+          <header className="mb-3.5 flex min-h-7 items-center justify-between gap-3">
+            <h1 className="text-base font-semibold tracking-tight">{t(locale, titleKey[section])}</h1>
+            <div className="min-h-6 text-xs text-muted-foreground" aria-live="polite">
               {status === "saving" ? t(locale, "settings.saving") : null}
               {status === "saved" ? t(locale, "settings.saved") : null}
               {status === "error" ? (

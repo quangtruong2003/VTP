@@ -175,3 +175,20 @@ pub use imp::insert_text;
 pub use imp::paste_via_clipboard;
 pub use imp::restore_target;
 pub use imp::FocusTarget;
+
+use std::sync::Mutex;
+static LAST_HISTORY_TARGET: Mutex<Option<FocusTarget>> = Mutex::new(None);
+
+pub fn store_history_target() {
+    if let Some(target) = capture_target() {
+        *LAST_HISTORY_TARGET.lock().unwrap() = Some(target);
+    }
+}
+
+pub fn restore_history_target() -> AppResult<()> {
+    if let Some(target) = LAST_HISTORY_TARGET.lock().unwrap().take() {
+        restore_target(&target)?;
+    }
+    Ok(())
+}
+

@@ -228,6 +228,8 @@ pub async fn begin_recording(app: AppHandle, session_id: SessionId) -> AppResult
         &snapshot.shortcut,
         &snapshot.process_shortcut,
         &snapshot.cancel_shortcut,
+        &snapshot.history_shortcut,
+        &snapshot.settings_shortcut,
     ) {
         emit_state(
             &app,

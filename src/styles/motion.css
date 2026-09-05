@@ -46,7 +46,6 @@
 
 .overlay-surface {
   transform-origin: center bottom;
-  will-change: opacity, transform;
 }
 
 .overlay-surface[data-lifecycle="visible"] {
@@ -59,12 +58,13 @@
 }
 
 .overlay-state-content {
-  animation: overlay-state-in var(--motion-standard) var(--ease-out-premium) both;
+  animation: overlay-state-in var(--motion-fast) var(--ease-out-premium) both;
 }
 
 .overlay-processing-bar {
   animation: overlay-processing-bar 900ms ease-in-out infinite;
   transform-origin: center;
+  will-change: transform, opacity;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -102,5 +102,6 @@
     animation: none;
     opacity: 0.8;
     transform: none;
+    will-change: auto;
   }
 }

@@ -90,11 +90,70 @@ fn build_menu(app: &AppHandle, settings: &AppSettings) -> tauri::Result<Menu<Wry
     Menu::with_items(app, &[&start, &settings_item, &history, &quit])
 }
 
-fn show_settings(app: &AppHandle) {
+pub fn show_settings(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("settings") {
+        let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
+    } else {
+        let _ = tauri::WebviewWindowBuilder::new(
+            app,
+            "settings",
+            tauri::WebviewUrl::App("settings.html".into()),
+        )
+        .title("Voice to Prompt Settings")
+        .inner_size(720.0, 520.0)
+        .min_inner_size(620.0, 440.0)
+        .resizable(true)
+        .center()
+        .build();
     }
+}
+
+pub fn toggle_settings(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("settings") {
+        if window.is_visible().unwrap_or(false) {
+            let _ = window.hide();
+            return;
+        }
+    }
+    show_settings(app);
+}
+
+pub fn show_history(app: &AppHandle) {
+    crate::focus::store_history_target();
+    if let Some(window) = app.get_webview_window("history") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+        let _ = window.emit("history://opened", ());
+    } else if let Ok(window) = tauri::WebviewWindowBuilder::new(
+        app,
+        "history",
+        tauri::WebviewUrl::App("history.html".into()),
+    )
+    .title("Voice to Prompt History")
+    .inner_size(440.0, 600.0)
+    .min_inner_size(360.0, 420.0)
+    .resizable(true)
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .center()
+    .build()
+    {
+        let _ = window.emit("history://opened", ());
+    }
+}
+
+pub fn toggle_history(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("history") {
+        if window.is_visible().unwrap_or(false) {
+            let _ = window.hide();
+            return;
+        }
+    }
+    show_history(app);
 }
 
 pub fn install(app: &App<Wry>, settings: &AppSettings) -> tauri::Result<()> {
@@ -111,10 +170,7 @@ pub fn install(app: &App<Wry>, settings: &AppSettings) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id.as_ref() {
             "toggle" => crate::overlay::toggle(app.clone()),
             "settings" => show_settings(app),
-            "history" => {
-                show_settings(app);
-                let _ = app.emit_to("settings", "app://settings-section", "history");
-            }
+            "history" => show_history(app),
             "quit" => app.exit(0),
             _ => {}
         })

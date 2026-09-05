@@ -10,6 +10,8 @@ pub enum ShortcutAction {
     RecordToggle,
     Process,
     Cancel,
+    HistoryToggle,
+    SettingsToggle,
 }
 
 pub fn parse_shortcut(value: &str) -> AppResult<Shortcut> {
@@ -41,14 +43,28 @@ pub fn parse_shortcut(value: &str) -> AppResult<Shortcut> {
     Shortcut::from_str(trimmed).map_err(|e| AppError::Shortcut(e.to_string()))
 }
 
-pub fn ensure_distinct_shortcuts(record: &str, process: &str, cancel: &str) -> AppResult<()> {
-    let record = parse_shortcut(record)?;
-    let process = parse_shortcut(process)?;
-    let cancel = parse_shortcut(cancel)?;
-    if record == process || record == cancel || process == cancel {
-        return Err(AppError::Shortcut(
-            "record, process, and cancel shortcuts must be different".into(),
-        ));
+pub fn ensure_distinct_shortcuts(
+    record: &str,
+    process: &str,
+    cancel: &str,
+    history: &str,
+    settings: &str,
+) -> AppResult<()> {
+    let r = parse_shortcut(record)?;
+    let p = parse_shortcut(process)?;
+    let c = parse_shortcut(cancel)?;
+    let h = parse_shortcut(history)?;
+    let s = parse_shortcut(settings)?;
+
+    let items = [r, p, c, h, s];
+    for i in 0..items.len() {
+        for j in (i + 1)..items.len() {
+            if items[i] == items[j] {
+                return Err(AppError::Shortcut(
+                    "all shortcuts must be distinct from each other".into(),
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -67,6 +83,8 @@ pub fn register_action(
                 ShortcutAction::RecordToggle => crate::overlay::toggle(app.clone()),
                 ShortcutAction::Process => crate::overlay::process(app.clone()),
                 ShortcutAction::Cancel => crate::overlay::cancel(app.clone()),
+                ShortcutAction::HistoryToggle => crate::tray::toggle_history(app),
+                ShortcutAction::SettingsToggle => crate::tray::toggle_settings(app),
             }
         })
         .map_err(|e| AppError::Shortcut(e.to_string()))
@@ -112,16 +130,36 @@ pub fn unregister_session_shortcuts(
 
 /// Startup-only registration. Runtime replacement uses atomic commands and
 /// never unregisters the working record shortcut first.
-pub fn reregister(app: &AppHandle, shortcut: &str) -> AppResult<()> {
+pub fn reregister(app: &AppHandle, settings: &crate::types::AppSettings) -> AppResult<()> {
     let gs = app.global_shortcut();
-    let trimmed = shortcut.trim();
-    if trimmed.is_empty() {
-        let _ = gs.unregister_all();
-        return Ok(());
-    }
-    let parsed = parse_shortcut(trimmed)?;
     let _ = gs.unregister_all();
-    register(app, parsed)
+
+    let record = settings.shortcut.trim();
+    if !record.is_empty() {
+        if let Ok(parsed) = parse_shortcut(record) {
+            let _ = register(app, parsed);
+        }
+    }
+
+    let history = settings.history_shortcut.trim();
+    if !history.is_empty() {
+        if let Ok(parsed) = parse_shortcut(history) {
+            if let Err(e) = register_action(app, parsed, ShortcutAction::HistoryToggle) {
+                eprintln!("failed to register history shortcut: {e}");
+            }
+        }
+    }
+
+    let settings_sc = settings.settings_shortcut.trim();
+    if !settings_sc.is_empty() {
+        if let Ok(parsed) = parse_shortcut(settings_sc) {
+            if let Err(e) = register_action(app, parsed, ShortcutAction::SettingsToggle) {
+                eprintln!("failed to register settings shortcut: {e}");
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -137,8 +175,30 @@ mod tests {
 
     #[test]
     fn record_process_and_cancel_shortcuts_must_be_distinct() {
-        assert!(ensure_distinct_shortcuts("Ctrl+Shift+Space", "Enter", "Escape").is_ok());
-        assert!(ensure_distinct_shortcuts("Enter", "Enter", "Escape").is_err());
-        assert!(ensure_distinct_shortcuts("Ctrl+Shift+Space", "Escape", "Escape").is_err());
+        assert!(ensure_distinct_shortcuts(
+            "Ctrl+Shift+Space",
+            "Enter",
+            "Escape",
+            "Alt+V",
+            "Alt+S"
+        )
+        .is_ok());
+        assert!(ensure_distinct_shortcuts("Enter", "Enter", "Escape", "Alt+V", "Alt+S").is_err());
+        assert!(ensure_distinct_shortcuts(
+            "Ctrl+Shift+Space",
+            "Escape",
+            "Escape",
+            "Alt+V",
+            "Alt+S"
+        )
+        .is_err());
+        assert!(ensure_distinct_shortcuts(
+            "Ctrl+Shift+Space",
+            "Enter",
+            "Escape",
+            "Alt+V",
+            "Alt+V"
+        )
+        .is_err());
     }
 }

@@ -110,8 +110,8 @@ pub fn cancel(app: AppHandle) {
     tauri::async_runtime::spawn(request_cancel(app));
 }
 
-const FAST_PATH_LAYOUT: (f64, f64) = (320.0, 68.0);
-const RECOVERY_LAYOUT: (f64, f64) = (388.0, 200.0);
+const FAST_PATH_LAYOUT: (f64, f64) = (280.0, 48.0);
+const RECOVERY_LAYOUT: (f64, f64) = (350.0, 160.0);
 
 pub fn layout_for(phase: &OverlayPhase) -> (f64, f64) {
     match phase {
@@ -326,7 +326,7 @@ mod tests {
             elapsed_ms: 0,
             level: 0,
         });
-        assert_eq!(recording, (320.0, 68.0));
+        assert_eq!(recording, (280.0, 48.0));
         assert_eq!(
             layout_for(&OverlayPhase::Paused { elapsed_ms: 0 }),
             recording
@@ -357,7 +357,7 @@ mod tests {
                 pasted: false,
                 copied: true,
             }),
-            (388.0, 200.0)
+            (350.0, 160.0)
         );
         assert_eq!(
             layout_for(&OverlayPhase::Error {
@@ -367,7 +367,7 @@ mod tests {
                     detail: None,
                 },
             }),
-            (388.0, 200.0),
+            (350.0, 160.0),
         );
     }
 
@@ -378,7 +378,7 @@ mod tests {
 
     #[test]
     fn unchanged_layout_skips_native_geometry_updates() {
-        assert!(!layout_change_required((400, 85), 1.25, (320.0, 68.0)));
-        assert!(layout_change_required((400, 85), 1.25, (388.0, 200.0)));
+        assert!(!layout_change_required((350, 60), 1.25, (280.0, 48.0)));
+        assert!(layout_change_required((350, 60), 1.25, (350.0, 160.0)));
     }
 }

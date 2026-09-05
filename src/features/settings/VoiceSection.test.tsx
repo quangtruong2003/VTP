@@ -84,6 +84,27 @@ const platform: PlatformInfo = { os: "windows", primary_modifier: "Ctrl" };
     expect(screen.queryByRole("switch", { name: "Start recording immediately" })).not.toBeInTheDocument();
   });
 
+  it("general section renders Start with Windows toggle and updates immediately", async () => {
+    const update = vi.fn();
+    render(
+      <GeneralSection
+        settings={{ ...settings, start_with_windows: false }}
+        platformInfo={platform}
+        devices={[{ name: "Mic A", is_default: true }]}
+        locale="en"
+        onUpdateImmediate={update}
+        onTryVoice={() => {}}
+      />,
+    );
+
+    const toggle = screen.getByRole("switch", { name: "Start with Windows" });
+    expect(toggle).toBeInTheDocument();
+    expect(toggle).not.toBeChecked();
+
+    await userEvent.click(toggle);
+    expect(update).toHaveBeenCalledWith({ start_with_windows: true });
+  });
+
   it("output switches save immediately", async () => {
     const update = vi.fn();
     render(

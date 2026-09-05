@@ -19,6 +19,12 @@ export const settingsApi = {
     invoke<PublicSettings>("set_process_shortcut", { shortcut }),
   setCancelShortcut: (shortcut: string) =>
     invoke<PublicSettings>("set_cancel_shortcut", { shortcut }),
+  setHistoryShortcut: (shortcut: string) =>
+    invoke<PublicSettings>("set_history_shortcut", { shortcut }),
+  setSettingsShortcut: (shortcut: string) =>
+    invoke<PublicSettings>("set_settings_shortcut", { shortcut }),
+  setStartWithWindows: (enabled: boolean) =>
+    invoke<PublicSettings>("set_start_with_windows", { enabled }),
   platformInfo: () => invoke<PlatformInfo>("platform_info"),
   connectApiKey: (key: string) => invoke<void>("connect_api_key", { key }),
   deleteApiKey: () => invoke<void>("delete_api_key"),
@@ -30,7 +36,12 @@ export const settingsApi = {
   testTextInsertion: () => invoke<void>("test_text_insertion"),
   historyList: () => invoke<HistoryEntry[]>("history_list"),
   historyCopy: (id: string) => invoke<void>("history_copy", { id }),
+  historyDelete: (id: string) => invoke<void>("history_delete", { id }),
+  historyInsert: (text: string) => invoke<void>("history_insert", { text }),
   historyClear: () => invoke<void>("history_clear"),
+  copyText: (text: string) => invoke<void>("copy_text", { text }),
+  openHistory: () => invoke<void>("open_history"),
+  closeHistory: () => invoke<void>("close_history"),
 };
 
 export async function onSettingsSaved(cb: (s: PublicSettings) => void) {

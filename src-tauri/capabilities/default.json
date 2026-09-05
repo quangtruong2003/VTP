@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default permissions for all app windows",
-  "windows": ["overlay", "settings"],
+  "windows": ["overlay", "settings", "history"],
   "permissions": [
     "core:default",
     "core:window:allow-show",
@@ -29,6 +29,9 @@
     "global-shortcut:allow-is-registered",
     "global-shortcut:allow-register-all",
     "global-shortcut:allow-unregister-all",
-    "opener:allow-open-url"
+    "opener:allow-open-url",
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled"
   ]
 }

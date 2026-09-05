@@ -11,8 +11,8 @@
   --card-foreground: var(--text-primary);
   --popover: var(--surface-1);
   --popover-foreground: var(--text-primary);
-  --primary: var(--accent-blue);
-  --primary-foreground: oklch(0.16 0.03 252);
+  --primary: var(--text-primary);
+  --primary-foreground: var(--surface-0);
   --secondary: var(--surface-2);
   --secondary-foreground: var(--text-primary);
   --muted: var(--surface-2);
@@ -23,7 +23,7 @@
   --destructive-foreground: var(--text-primary);
   --border: var(--border-subtle);
   --input: var(--border-strong);
-  --ring: var(--accent-blue);
+  --ring: oklch(0.556 0 0);
   --chart-1: oklch(0.647 0.218 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
@@ -32,12 +32,12 @@
   --radius: 0.625rem;
   --sidebar: var(--surface-1);
   --sidebar-foreground: var(--text-primary);
-  --sidebar-primary: var(--accent-blue);
-  --sidebar-primary-foreground: oklch(0.16 0.03 252);
-  --sidebar-accent: var(--surface-3);
+  --sidebar-primary: var(--text-primary);
+  --sidebar-primary-foreground: var(--surface-0);
+  --sidebar-accent: var(--surface-2);
   --sidebar-accent-foreground: var(--text-primary);
   --sidebar-border: var(--border-subtle);
-  --sidebar-ring: var(--accent-blue);
+  --sidebar-ring: oklch(0.556 0 0);
 }
 
 @theme inline {
@@ -100,5 +100,33 @@
   html.overlay-root body,
   html.overlay-root #root {
     background: transparent;
+  }
+
+  /* Sleek custom scrollbars matching shadcn dark zinc theme */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.16);
+    border-radius: 9999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.3);
+  }
+
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
   }
 }

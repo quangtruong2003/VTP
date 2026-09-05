@@ -53,17 +53,17 @@ export function VoiceSection({
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-3.5">
       <SectionCard
         title={t(locale, "settings.microphone")}
         description={t(locale, "settings.microphoneDesc")}
       >
-        <div className="space-y-4">
+        <div className="space-y-3">
           <label className="block text-xs font-medium text-muted-foreground">
             <span className="sr-only">{t(locale, "settings.microphone")}</span>
             <select
               aria-label={t(locale, "settings.microphone")}
-              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
               value={settings.device_name ?? "__default__"}
               onChange={(event) =>
                 onUpdateImmediate({
@@ -82,8 +82,8 @@ export function VoiceSection({
             </select>
           </label>
 
-          <div className="flex items-center justify-between gap-4 text-xs text-muted-foreground">
-            <span>
+          <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+            <span className="text-[11px]">
               {settings.device_name ?? t(locale, "settings.systemDefault")}
               {!settings.device_name && defaultDevice ? ` · ${defaultDevice.name}` : ""}
             </span>
@@ -91,17 +91,18 @@ export function VoiceSection({
               type="button"
               size="sm"
               variant="ghost"
+              className="h-7 px-2 text-xs"
               onClick={() => void onRefreshDevices()}
             >
-              <RefreshCw className="size-3.5" aria-hidden="true" />
+              <RefreshCw className="size-3 shrink-0" aria-hidden="true" />
               {t(locale, "settings.refreshDevices")}
             </Button>
           </div>
 
-          <div className="rounded-lg border border-border bg-secondary/30 px-4 py-3">
-            <div className="flex items-center justify-between gap-4">
+          <div className="rounded-lg border border-border bg-secondary/30 px-3 py-2.5">
+            <div className="flex items-center justify-between gap-3">
               <div className="min-w-0 flex-1">
-                <div className="scale-[0.82] origin-left">
+                <div className="scale-[0.80] origin-left">
                   <VoiceMeter level={micLevel} locale={locale} />
                 </div>
                 <StatusBadge tone={micLevel > 12 ? "success" : "neutral"}>
@@ -113,6 +114,8 @@ export function VoiceSection({
               </div>
               <Button
                 type="button"
+                size="sm"
+                className="h-7 px-2.5 text-xs"
                 variant={testing ? "secondary" : "outline"}
                 onClick={() => void (testing ? stopTest() : startTest())}
               >

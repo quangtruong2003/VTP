@@ -29,6 +29,8 @@ export function Onboarding({
   onSetShortcut,
   onSetProcessShortcut,
   onSetCancelShortcut,
+  onSetHistoryShortcut,
+  onSetSettingsShortcut,
   onShortcutCommitted,
   onTryNow,
 }: {
@@ -45,6 +47,8 @@ export function Onboarding({
   onSetShortcut: (shortcut: string) => Promise<PublicSettings>;
   onSetProcessShortcut: (shortcut: string) => Promise<PublicSettings>;
   onSetCancelShortcut: (shortcut: string) => Promise<PublicSettings>;
+  onSetHistoryShortcut: (shortcut: string) => Promise<PublicSettings>;
+  onSetSettingsShortcut: (shortcut: string) => Promise<PublicSettings>;
   onShortcutCommitted: (snapshot: PublicSettings) => void;
   onTryNow: () => void;
 }) {
@@ -254,6 +258,8 @@ export function Onboarding({
               onSetShortcut={onSetShortcut}
               onSetProcessShortcut={onSetProcessShortcut}
               onSetCancelShortcut={onSetCancelShortcut}
+              onSetHistoryShortcut={onSetHistoryShortcut}
+              onSetSettingsShortcut={onSetSettingsShortcut}
               onCommitted={onShortcutCommitted}
             />
 

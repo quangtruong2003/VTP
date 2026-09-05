@@ -16,26 +16,26 @@ export function ProcessingState({
 }) {
   const long = elapsedMs >= 8_000;
   return (
-    <div className="flex h-full items-center gap-3 px-4">
-      <div aria-hidden="true" className="flex h-7 items-center gap-1">
+    <div className="flex h-full items-center gap-2.5 px-3.5 select-none">
+      <div aria-hidden="true" className="flex h-6 items-center gap-1">
         {[0, 1, 2, 3, 4].map((index) => (
           <span
             key={index}
-            className="overlay-processing-bar h-3.5 w-1 rounded-full bg-primary/80"
+            className="overlay-processing-bar h-3 w-1 rounded-full bg-zinc-100/90"
             style={{ animationDelay: `${index * 85}ms` }}
           />
         ))}
       </div>
       <div className="min-w-0 flex-1">
-        <div className="text-[13px] font-medium text-foreground">{t(locale, "overlay.processing")}</div>
+        <div className="text-xs font-medium text-zinc-100 truncate">{t(locale, "overlay.processing")}</div>
         {showHint ? (
-          <div className="mt-1 text-xs text-muted-foreground">
+          <div className="text-[10px] text-zinc-400 truncate">
             {t(locale, long ? "overlay.processingLong" : "overlay.processingHint")}
           </div>
         ) : null}
       </div>
       {showCancel ? (
-        <Button size="sm" variant="ghost" className="h-8 px-2.5" onClick={onCancel}>
+        <Button size="sm" variant="ghost" className="h-7 rounded-full px-2 text-xs text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800" onClick={onCancel}>
           {t(locale, "overlay.cancel")}
         </Button>
       ) : null}

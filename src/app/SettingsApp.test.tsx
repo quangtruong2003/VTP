@@ -34,6 +34,8 @@ vi.mock("@/lib/settings", () => ({
     setShortcut: mocks.setShortcut,
     setProcessShortcut: mocks.setProcessShortcut,
     setCancelShortcut: mocks.setCancelShortcut,
+    setHistoryShortcut: vi.fn(),
+    setSettingsShortcut: vi.fn(),
     historyList: mocks.historyList,
     historyCopy: mocks.historyCopy,
     historyClear: mocks.historyClear,

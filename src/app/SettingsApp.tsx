@@ -118,6 +118,8 @@ export function SettingsApp() {
           onSetShortcut={settingsApi.setShortcut}
           onSetProcessShortcut={settingsApi.setProcessShortcut}
           onSetCancelShortcut={settingsApi.setCancelShortcut}
+          onSetHistoryShortcut={settingsApi.setHistoryShortcut}
+          onSetSettingsShortcut={settingsApi.setSettingsShortcut}
           onShortcutCommitted={store.replaceSettings}
           onTryNow={() => void overlayApi.toggle()}
         />
@@ -184,6 +186,8 @@ export function SettingsApp() {
             onSetShortcut={settingsApi.setShortcut}
             onSetProcessShortcut={settingsApi.setProcessShortcut}
             onSetCancelShortcut={settingsApi.setCancelShortcut}
+            onSetHistoryShortcut={settingsApi.setHistoryShortcut}
+            onSetSettingsShortcut={settingsApi.setSettingsShortcut}
             onCommitted={store.replaceSettings}
           />
         ) : null}

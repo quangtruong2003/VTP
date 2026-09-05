@@ -14,6 +14,14 @@ fn default_cancel_shortcut() -> String {
     "Escape".into()
 }
 
+fn default_history_shortcut() -> String {
+    "Alt+V".into()
+}
+
+fn default_settings_shortcut() -> String {
+    "Alt+S".into()
+}
+
 /// Settings persisted to settings.json. The API key is deliberately NOT
 /// part of this struct — it lives exclusively in the OS credential store.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,6 +37,10 @@ pub struct AppSettings {
     pub process_shortcut: String,
     #[serde(default = "default_cancel_shortcut")]
     pub cancel_shortcut: String,
+    #[serde(default = "default_history_shortcut")]
+    pub history_shortcut: String,
+    #[serde(default = "default_settings_shortcut")]
+    pub settings_shortcut: String,
     pub copy_to_clipboard: bool,
     pub paste_automatically: bool,
     pub device_name: Option<String>,
@@ -38,6 +50,8 @@ pub struct AppSettings {
     pub ui_locale: String,
     #[serde(default)]
     pub fallback_models: Vec<String>,
+    #[serde(default)]
+    pub start_with_windows: bool,
 }
 
 impl AppSettings {
@@ -71,6 +85,8 @@ impl Default for AppSettings {
             shortcut: "CmdOrCtrl+Shift+Space".into(),
             process_shortcut: default_process_shortcut(),
             cancel_shortcut: default_cancel_shortcut(),
+            history_shortcut: default_history_shortcut(),
+            settings_shortcut: default_settings_shortcut(),
             copy_to_clipboard: true,
             paste_automatically: true,
             device_name: None,
@@ -78,6 +94,7 @@ impl Default for AppSettings {
             start_recording_on_open: true,
             ui_locale: "system".into(),
             fallback_models: Vec::new(),
+            start_with_windows: false,
         }
     }
 }
@@ -204,5 +221,6 @@ mod tests {
         assert_eq!(s.process_shortcut, "Enter");
         assert_eq!(s.cancel_shortcut, "Escape");
         assert_eq!(s.ui_locale, "system");
+        assert_eq!(s.start_with_windows, false);
     }
 }

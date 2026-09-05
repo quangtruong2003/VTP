@@ -20,11 +20,20 @@ use crate::types::{
 
 #[tauri::command]
 pub async fn get_public_settings(
+    app: AppHandle,
     store: State<'_, Arc<SettingsStore>>,
 ) -> AppResult<PublicSettings> {
+    let mut settings = store.get();
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        if let Ok(is_enabled) = app.autolaunch().is_enabled() {
+            settings.start_with_windows = is_enabled;
+        }
+    }
     Ok(PublicSettings {
         api_key_set: store.api_key_set(),
-        settings: store.get(),
+        settings,
     })
 }
 
@@ -48,6 +57,22 @@ pub async fn save_settings(
     settings.shortcut = current.shortcut;
     settings.process_shortcut = current.process_shortcut;
     settings.cancel_shortcut = current.cancel_shortcut;
+    settings.history_shortcut = current.history_shortcut;
+    settings.settings_shortcut = current.settings_shortcut;
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        if settings.start_with_windows {
+            if let Err(e) = app.autolaunch().enable() {
+                log::warn!("failed to enable autostart: {e}");
+            }
+        } else {
+            if let Err(e) = app.autolaunch().disable() {
+                log::warn!("failed to disable autostart: {e}");
+            }
+        }
+    }
 
     let snapshot = store.update(|s| *s = settings)?;
     if let Err(error) = crate::tray::refresh(&app, &snapshot) {
@@ -67,11 +92,43 @@ pub async fn save_settings(
     })
 }
 
+#[tauri::command]
+pub async fn set_start_with_windows(
+    app: AppHandle,
+    store: State<'_, Arc<SettingsStore>>,
+    enabled: bool,
+) -> AppResult<PublicSettings> {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        if enabled {
+            app.autolaunch().enable().map_err(|e| AppError::Settings(e.to_string()))?;
+        } else {
+            app.autolaunch().disable().map_err(|e| AppError::Settings(e.to_string()))?;
+        }
+    }
+    let snapshot = store.update(|s| s.start_with_windows = enabled)?;
+    let _ = app.emit_to(
+        "settings",
+        "settings://saved",
+        &PublicSettings {
+            api_key_set: store.api_key_set(),
+            settings: snapshot.clone(),
+        },
+    );
+    Ok(PublicSettings {
+        api_key_set: store.api_key_set(),
+        settings: snapshot,
+    })
+}
+
 #[derive(Clone, Copy)]
 enum ShortcutField {
     Record,
     Process,
     Cancel,
+    History,
+    Settings,
 }
 
 impl ShortcutField {
@@ -80,6 +137,8 @@ impl ShortcutField {
             Self::Record => crate::shortcut::ShortcutAction::RecordToggle,
             Self::Process => crate::shortcut::ShortcutAction::Process,
             Self::Cancel => crate::shortcut::ShortcutAction::Cancel,
+            Self::History => crate::shortcut::ShortcutAction::HistoryToggle,
+            Self::Settings => crate::shortcut::ShortcutAction::SettingsToggle,
         }
     }
 
@@ -88,6 +147,8 @@ impl ShortcutField {
             Self::Record => &settings.shortcut,
             Self::Process => &settings.process_shortcut,
             Self::Cancel => &settings.cancel_shortcut,
+            Self::History => &settings.history_shortcut,
+            Self::Settings => &settings.settings_shortcut,
         }
     }
 
@@ -96,6 +157,8 @@ impl ShortcutField {
             Self::Record => settings.shortcut = value,
             Self::Process => settings.process_shortcut = value,
             Self::Cancel => settings.cancel_shortcut = value,
+            Self::History => settings.history_shortcut = value,
+            Self::Settings => settings.settings_shortcut = value,
         }
     }
 }
@@ -116,29 +179,28 @@ async fn replace_shortcut(
         });
     }
 
-    let (record, process, cancel) = match field {
-        ShortcutField::Record => (
-            new_text.as_str(),
-            current.process_shortcut.as_str(),
-            current.cancel_shortcut.as_str(),
-        ),
-        ShortcutField::Process => (
-            current.shortcut.as_str(),
-            new_text.as_str(),
-            current.cancel_shortcut.as_str(),
-        ),
-        ShortcutField::Cancel => (
-            current.shortcut.as_str(),
-            current.process_shortcut.as_str(),
-            new_text.as_str(),
-        ),
-    };
-    crate::shortcut::ensure_distinct_shortcuts(record, process, cancel)?;
+    let mut record = current.shortcut.as_str();
+    let mut process = current.process_shortcut.as_str();
+    let mut cancel = current.cancel_shortcut.as_str();
+    let mut history = current.history_shortcut.as_str();
+    let mut settings = current.settings_shortcut.as_str();
+
+    match field {
+        ShortcutField::Record => record = new_text.as_str(),
+        ShortcutField::Process => process = new_text.as_str(),
+        ShortcutField::Cancel => cancel = new_text.as_str(),
+        ShortcutField::History => history = new_text.as_str(),
+        ShortcutField::Settings => settings = new_text.as_str(),
+    }
+    crate::shortcut::ensure_distinct_shortcuts(record, process, cancel, history, settings)?;
 
     let new = crate::shortcut::parse_shortcut(&new_text)?;
     let old = crate::shortcut::parse_shortcut(&old_text)?;
     let active_session = session::active_stage(app).await.is_some();
-    let old_is_registered = matches!(field, ShortcutField::Record) || active_session;
+    let old_is_registered = matches!(
+        field,
+        ShortcutField::Record | ShortcutField::History | ShortcutField::Settings
+    ) || active_session;
 
     // Register the candidate first so a conflict never destroys the working
     // binding. Session-only Enter/Esc bindings are validated and immediately
@@ -215,6 +277,36 @@ pub async fn set_cancel_shortcut(
         &app,
         store.inner().as_ref(),
         ShortcutField::Cancel,
+        shortcut,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn set_history_shortcut(
+    app: AppHandle,
+    store: State<'_, Arc<SettingsStore>>,
+    shortcut: String,
+) -> AppResult<PublicSettings> {
+    replace_shortcut(
+        &app,
+        store.inner().as_ref(),
+        ShortcutField::History,
+        shortcut,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn set_settings_shortcut(
+    app: AppHandle,
+    store: State<'_, Arc<SettingsStore>>,
+    shortcut: String,
+) -> AppResult<PublicSettings> {
+    replace_shortcut(
+        &app,
+        store.inner().as_ref(),
+        ShortcutField::Settings,
         shortcut,
     )
     .await
@@ -405,8 +497,51 @@ pub fn history_copy(
 }
 
 #[tauri::command]
-pub fn history_clear(store: State<'_, Arc<HistoryStore>>) -> AppResult<()> {
-    store.clear()
+pub fn history_clear(app: AppHandle, store: State<'_, Arc<HistoryStore>>) -> AppResult<()> {
+    store.clear()?;
+    let _ = app.emit("history://changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn history_delete(
+    app: AppHandle,
+    id: String,
+    store: State<'_, Arc<HistoryStore>>,
+) -> AppResult<()> {
+    store.delete(&id)?;
+    let _ = app.emit("history://changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn history_insert(app: AppHandle, text: String) -> AppResult<()> {
+    if let Some(w) = app.get_webview_window("history") {
+        let _ = w.hide();
+    }
+    app.clipboard()
+        .write_text(text)
+        .map_err(|e| AppError::Other(format!("clipboard: {e}")))?;
+    focus::restore_history_target()?;
+    focus::paste_via_clipboard()?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn open_history(app: AppHandle) {
+    focus::store_history_target();
+    if let Some(w) = app.get_webview_window("history") {
+        let _ = w.show();
+        let _ = w.set_focus();
+        let _ = w.emit("history://opened", ());
+    }
+}
+
+#[tauri::command]
+pub fn close_history(app: AppHandle) {
+    if let Some(w) = app.get_webview_window("history") {
+        let _ = w.hide();
+    }
 }
 
 // ---------- window helpers ----------

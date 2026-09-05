@@ -53,6 +53,19 @@ impl HistoryStore {
         fs::write(&self.path, "")?;
         Ok(())
     }
+
+    pub fn delete(&self, id: &str) -> AppResult<()> {
+        let mut entries = self.all();
+        entries.retain(|e| e.id != id);
+        entries.reverse();
+        use std::io::Write;
+        let mut f = fs::File::create(&self.path)?;
+        for e in entries {
+            let line = serde_json::to_string(&e).map_err(|err| AppError::Settings(err.to_string()))?;
+            writeln!(f, "{line}")?;
+        }
+        Ok(())
+    }
 }
 
 /// The transcript hint is the only thing kept from the request — the audio
@@ -96,3 +109,48 @@ pub fn now_iso() -> String {
     let y = if mo <= 2 { y + 1 } else { y };
     format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn history_delete_removes_matching_entry() {
+        let temp_dir = std::env::temp_dir().join(format!("vtp_test_{}", new_id()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let store = HistoryStore {
+            path: temp_dir.join("test_history.jsonl"),
+        };
+        let e1 = HistoryEntry {
+            id: "id-1".into(),
+            created_at: now_iso(),
+            duration_ms: 1000,
+            transcript_hint: "hint 1".into(),
+            response_text: "resp 1".into(),
+            model: "model-1".into(),
+            status: "success".into(),
+            error_message: None,
+        };
+        let e2 = HistoryEntry {
+            id: "id-2".into(),
+            created_at: now_iso(),
+            duration_ms: 2000,
+            transcript_hint: "hint 2".into(),
+            response_text: "resp 2".into(),
+            model: "model-2".into(),
+            status: "success".into(),
+            error_message: None,
+        };
+        store.push(&e1).unwrap();
+        store.push(&e2).unwrap();
+        assert_eq!(store.all().len(), 2);
+
+        store.delete("id-1").unwrap();
+        let remaining = store.all();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, "id-2");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+}
+
