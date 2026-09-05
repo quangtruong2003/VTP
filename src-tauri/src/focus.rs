@@ -191,4 +191,3 @@ pub fn restore_history_target() -> AppResult<()> {
     }
     Ok(())
 }
-

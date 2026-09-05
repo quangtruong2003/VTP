@@ -258,8 +258,8 @@ pub fn hide(app: &AppHandle) -> AppResult<()> {
     #[cfg(target_os = "windows")]
     {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            SetWindowPos, ShowWindow, SW_HIDE, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE,
-            SWP_NOSIZE,
+            SetWindowPos, ShowWindow, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+            SW_HIDE,
         };
         let hwnd = w.hwnd().map(|h| h.0).unwrap_or_default();
         if hwnd as usize != 0 {

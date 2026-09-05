@@ -175,14 +175,10 @@ mod tests {
 
     #[test]
     fn record_process_and_cancel_shortcuts_must_be_distinct() {
-        assert!(ensure_distinct_shortcuts(
-            "Ctrl+Shift+Space",
-            "Enter",
-            "Escape",
-            "Alt+V",
-            "Alt+S"
-        )
-        .is_ok());
+        assert!(
+            ensure_distinct_shortcuts("Ctrl+Shift+Space", "Enter", "Escape", "Alt+V", "Alt+S")
+                .is_ok()
+        );
         assert!(ensure_distinct_shortcuts("Enter", "Enter", "Escape", "Alt+V", "Alt+S").is_err());
         assert!(ensure_distinct_shortcuts(
             "Ctrl+Shift+Space",
@@ -192,13 +188,9 @@ mod tests {
             "Alt+S"
         )
         .is_err());
-        assert!(ensure_distinct_shortcuts(
-            "Ctrl+Shift+Space",
-            "Enter",
-            "Escape",
-            "Alt+V",
-            "Alt+V"
-        )
-        .is_err());
+        assert!(
+            ensure_distinct_shortcuts("Ctrl+Shift+Space", "Enter", "Escape", "Alt+V", "Alt+V")
+                .is_err()
+        );
     }
 }

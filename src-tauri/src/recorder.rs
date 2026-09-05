@@ -246,8 +246,9 @@ pub fn start_recording(device_name: Option<&str>) -> AppResult<RecorderHandle> {
 
             let mut batch: Vec<f32> = Vec::with_capacity(4_096);
             loop {
-                if ctrl_rx.try_recv().is_ok() {
-                    break;
+                match ctrl_rx.try_recv() {
+                    Ok(Ctrl::Stop) | Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
                 }
                 batch.clear();
                 while let Some(s) = shared.queue.pop() {
@@ -270,26 +271,24 @@ pub fn start_recording(device_name: Option<&str>) -> AppResult<RecorderHandle> {
                 thread_level.store(next, Ordering::Relaxed);
                 if !batch.is_empty() {
                     shared.samples.lock().unwrap().extend_from_slice(&batch);
-                } else {
-                    std::thread::sleep(Duration::from_millis(10));
+                } else if wait_for_stop_when_idle(&ctrl_rx, Duration::from_millis(10)) {
+                    break;
                 }
             }
-            // final drain so no tail samples are lost
-            shared.done.store(true, Ordering::Relaxed);
-            std::thread::sleep(Duration::from_millis(40));
-            while let Some(s) = shared.queue.pop() {
-                batch.push(s);
-            }
-            if !batch.is_empty() {
-                shared.samples.lock().unwrap().extend_from_slice(&batch);
-            }
+            // Close the callback gate first, then deterministically quiesce
+            // the WASAPI stream. CPAL's WASAPI Stream::drop sends Terminate
+            // and joins its worker thread, so no callback can enqueue after
+            // this returns and the queue can be drained without a fixed wait.
+            shared.done.store(true, Ordering::Release);
+            drop(stream);
+            drain_pending_samples(&shared, &mut batch);
+
             let samples = std::mem::take(&mut *shared.samples.lock().unwrap());
             let peak_level = thread_level.load(Ordering::Relaxed);
             let _ = result_tx.send(RecordingShared {
                 samples,
                 peak_level,
             });
-            // stream dropped here, on this thread
         })
         .map_err(|e| AppError::Recording(format!("spawn capture thread: {e}")))?;
 
@@ -303,20 +302,39 @@ pub fn start_recording(device_name: Option<&str>) -> AppResult<RecorderHandle> {
     })
 }
 
+fn wait_for_stop_when_idle(ctrl_rx: &std::sync::mpsc::Receiver<Ctrl>, timeout: Duration) -> bool {
+    match ctrl_rx.recv_timeout(timeout) {
+        Ok(Ctrl::Stop) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => true,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => false,
+    }
+}
+
+fn drain_pending_samples(shared: &Shared, batch: &mut Vec<f32>) {
+    batch.clear();
+    while let Some(sample) = shared.queue.pop() {
+        batch.push(sample);
+    }
+    if !batch.is_empty() {
+        shared.samples.lock().unwrap().extend_from_slice(batch);
+    }
+}
+
+fn push_input_samples<S: cpal::SizedSample + Send + 'static>(shared: &Shared, data: &[S]) {
+    if shared.done.load(Ordering::Acquire) || shared.paused.load(Ordering::Acquire) {
+        return;
+    }
+    for sample in data {
+        // Widen to f32 per the device's sample format; the callback itself
+        // only pushes into the lock-free queue.
+        let value: f32 = widen::<S>(*sample);
+        let _ = shared.queue.push(value);
+    }
+}
+
 fn make_callback<S: cpal::SizedSample + Send + 'static>(
     shared: Arc<Shared>,
 ) -> impl FnMut(&[S], &InputCallbackInfo) + Send + 'static {
-    move |data: &[S], _info: &InputCallbackInfo| {
-        if shared.done.load(Ordering::Relaxed) || shared.paused.load(Ordering::Acquire) {
-            return;
-        }
-        for s in data.iter() {
-            // Widen to f32 per the device's sample format; the callback
-            // itself only pushes into the lock-free queue.
-            let v: f32 = widen::<S>(*s);
-            let _ = shared.queue.push(v);
-        }
-    }
+    move |data: &[S], _info: &InputCallbackInfo| push_input_samples(&shared, data)
 }
 
 #[inline]
@@ -459,5 +477,133 @@ mod tests {
         // Check channel count in WAV header (bytes 22..24) is 1 (Mono)
         let wav_channels = u16::from_le_bytes(wav[22..24].try_into().unwrap());
         assert_eq!(wav_channels, 1);
+    }
+
+    fn test_shared(initial_samples: &[f32], paused: bool, done: bool) -> Shared {
+        let queue = Arc::new(crossbeam_queue::ArrayQueue::new(32));
+        Shared {
+            queue,
+            done: AtomicBool::new(done),
+            paused: Arc::new(AtomicBool::new(paused)),
+            samples: Mutex::new(initial_samples.to_vec()),
+        }
+    }
+
+    #[test]
+    fn final_drain_preserves_samples_already_collected_and_pending() {
+        let shared = test_shared(&[0.1, 0.2], false, true);
+        shared.queue.push(0.3).unwrap();
+        shared.queue.push(0.4).unwrap();
+        let mut batch = vec![9.0];
+
+        drain_pending_samples(&shared, &mut batch);
+
+        assert_eq!(*shared.samples.lock().unwrap(), vec![0.1, 0.2, 0.3, 0.4]);
+        assert!(shared.queue.is_empty());
+    }
+
+    #[test]
+    fn terminal_callback_gate_rejects_new_samples() {
+        let shared = test_shared(&[], false, true);
+
+        push_input_samples(&shared, &[0.25f32, 0.5]);
+
+        assert!(shared.queue.is_empty());
+    }
+
+    #[test]
+    fn paused_callback_rejects_samples_but_resume_accepts_them() {
+        let shared = test_shared(&[], true, false);
+        push_input_samples(&shared, &[0.25f32]);
+        assert!(shared.queue.is_empty());
+
+        shared.paused.store(false, Ordering::Release);
+        push_input_samples(&shared, &[0.5f32]);
+        assert_eq!(shared.queue.pop(), Some(0.5));
+    }
+
+    #[test]
+    fn duration_uses_sample_frames_rate_and_channels() {
+        let samples = vec![0.0; 96_000];
+        assert_eq!(duration_ms_of(&samples, 48_000, 2), 1_000);
+        assert_eq!(duration_ms_of(&samples[..48_000], 48_000, 2), 500);
+    }
+
+    #[test]
+    fn empty_recording_has_zero_duration() {
+        assert_eq!(duration_ms_of(&[], 48_000, 2), 0);
+        assert_eq!(duration_ms_of(&[], 0, 0), 0);
+    }
+
+    #[test]
+    fn idle_control_wait_observes_stop_and_sender_disconnect() {
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+        stop_tx.send(Ctrl::Stop).unwrap();
+        assert!(wait_for_stop_when_idle(&stop_rx, Duration::from_secs(1)));
+
+        let (drop_tx, drop_rx) = std::sync::mpsc::channel();
+        drop(drop_tx);
+        assert!(wait_for_stop_when_idle(&drop_rx, Duration::from_secs(1)));
+    }
+
+    #[test]
+    #[ignore = "manual CPU latency benchmark; run in release mode with --nocapture"]
+    fn benchmark_audio_encode_path() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        const AUDIO_RUNS: usize = 5;
+        const BASE64_RUNS: usize = 20;
+        const VEC_CLONE_RUNS: usize = 500;
+        const ARC_CLONE_RUNS: usize = 100_000;
+
+        for seconds in [5usize, 15, 30] {
+            let source_samples = 48_000 * 2 * seconds;
+            let input: Vec<f32> = (0..source_samples)
+                .map(|i| ((i as f32) * 0.011).sin() * 0.5)
+                .collect();
+
+            let started = Instant::now();
+            for _ in 0..AUDIO_RUNS {
+                black_box(resample_to_16k_mono(black_box(&input), 48_000, 2));
+            }
+            let resample_ms = started.elapsed().as_secs_f64() * 1_000.0 / AUDIO_RUNS as f64;
+
+            let started = Instant::now();
+            for _ in 0..AUDIO_RUNS {
+                black_box(samples_to_wav(black_box(&input), 48_000, 2));
+            }
+            let wav_ms = started.elapsed().as_secs_f64() * 1_000.0 / AUDIO_RUNS as f64;
+
+            let wav = samples_to_wav(&input, 48_000, 2);
+            let started = Instant::now();
+            for _ in 0..BASE64_RUNS {
+                black_box(base64::Engine::encode(
+                    &base64::engine::general_purpose::STANDARD,
+                    black_box(wav.as_slice()),
+                ));
+            }
+            let base64_ms = started.elapsed().as_secs_f64() * 1_000.0 / BASE64_RUNS as f64;
+
+            let started = Instant::now();
+            for _ in 0..VEC_CLONE_RUNS {
+                black_box(wav.clone());
+            }
+            let vec_clone_ns =
+                started.elapsed().as_secs_f64() * 1_000_000_000.0 / VEC_CLONE_RUNS as f64;
+
+            let shared: Arc<[u8]> = wav.into();
+            let started = Instant::now();
+            for _ in 0..ARC_CLONE_RUNS {
+                black_box(Arc::clone(&shared));
+            }
+            let arc_clone_ns =
+                started.elapsed().as_secs_f64() * 1_000_000_000.0 / ARC_CLONE_RUNS as f64;
+
+            println!(
+                "audio_bench seconds={seconds} wav_bytes={} resample_ms={resample_ms:.3} samples_to_wav_ms={wav_ms:.3} base64_ms={base64_ms:.3} old_vec_clone_ns={vec_clone_ns:.1} shared_arc_clone_ns={arc_clone_ns:.1}",
+                shared.len()
+            );
+        }
     }
 }

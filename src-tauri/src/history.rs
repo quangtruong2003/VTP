@@ -61,7 +61,8 @@ impl HistoryStore {
         use std::io::Write;
         let mut f = fs::File::create(&self.path)?;
         for e in entries {
-            let line = serde_json::to_string(&e).map_err(|err| AppError::Settings(err.to_string()))?;
+            let line =
+                serde_json::to_string(&e).map_err(|err| AppError::Settings(err.to_string()))?;
             writeln!(f, "{line}")?;
         }
         Ok(())
@@ -153,4 +154,3 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
-

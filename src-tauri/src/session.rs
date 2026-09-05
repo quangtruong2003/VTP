@@ -85,7 +85,7 @@ pub struct Session {
 
 #[derive(Clone)]
 pub struct CachedTurn {
-    pub wav: Vec<u8>,
+    pub wav: Arc<[u8]>,
     pub duration_ms: u64,
     pub target: Option<focus::FocusTarget>,
 }
@@ -397,7 +397,7 @@ async fn execute_ai_turn(
     app: &AppHandle,
     mgr: &Arc<SessionManager>,
     session_id: SessionId,
-    wav: Vec<u8>,
+    wav: Arc<[u8]>,
     duration_ms: u64,
     target: Option<focus::FocusTarget>,
     cancellation: CancellationToken,
@@ -411,20 +411,23 @@ async fn execute_ai_turn(
     emit_state(app, session_id, OverlayPhase::Processing);
     let gemini: Arc<GeminiClient> = app.state::<Arc<GeminiClient>>().inner().clone();
     let settings: Arc<SettingsStore> = app.state::<Arc<SettingsStore>>().inner().clone();
+    let request_started = Instant::now();
     let text = gemini
-        .transcribe_and_respond(&settings, &wav, snapshot)
+        .transcribe_and_respond(&settings, wav.as_ref(), snapshot)
         .await
         .map_err(|e| {
             gemini::GeminiClient::friendly_api_error(&e)
                 .map(AppError::Other)
                 .unwrap_or(e)
         })?;
+    let request_total_ms = request_started.elapsed().as_millis();
 
     if cancellation.is_cancelled() {
         return Ok(());
     }
 
     mgr.set_stage(session_id, SessionStage::Inserting).await;
+    let insertion_started = Instant::now();
 
     let mut copied = false;
     if snapshot.copy_to_clipboard || snapshot.paste_automatically {
@@ -499,7 +502,16 @@ async fn execute_ai_turn(
         let _ = app.emit_to("settings", "history://changed", ());
     }
 
+    let insertion_ms = insertion_started.elapsed().as_millis();
     if let Some(error) = insertion_error {
+        log::debug!(
+            "voice latency: session={} request_total_ms={} insertion_ms={} wav_bytes={} model={}",
+            session_id,
+            request_total_ms,
+            insertion_ms,
+            wav.len(),
+            snapshot.model
+        );
         return Err(error);
     }
 
@@ -518,12 +530,21 @@ async fn execute_ai_turn(
             copied: snapshot.copy_to_clipboard || copied,
         },
     );
+    log::debug!(
+        "voice latency: session={} request_total_ms={} insertion_ms={} wav_bytes={} model={}",
+        session_id,
+        request_total_ms,
+        insertion_ms,
+        wav.len(),
+        snapshot.model
+    );
     Ok(())
 }
 
 /// Explicitly finish capture and run the AI pipeline. The record shortcut no
 /// longer triggers this; processing is a separate action (Enter by default).
 pub async fn process_recording(app: AppHandle) -> AppResult<()> {
+    let process_started = Instant::now();
     let mgr: Arc<SessionManager> = app.state::<Arc<SessionManager>>().inner().clone();
     let (session_id, rec, target, cancellation) = {
         let mut guard = mgr.active.lock().await;
@@ -547,7 +568,9 @@ pub async fn process_recording(app: AppHandle) -> AppResult<()> {
     let snapshot = settings.get();
 
     emit_state(&app, session_id, OverlayPhase::Uploading);
+    let stop_started = Instant::now();
     let recording = rec.stop();
+    let record_stop_ms = stop_started.elapsed().as_millis();
 
     if recording.samples.is_empty() {
         let error = AppError::Recording(
@@ -569,10 +592,23 @@ pub async fn process_recording(app: AppHandle) -> AppResult<()> {
         return Err(error);
     }
 
-    let wav = recorder::samples_to_wav(
+    let encode_started = Instant::now();
+    let wav: Arc<[u8]> = recorder::samples_to_wav(
         &recording.samples,
         recording.sample_rate,
         recording.channels,
+    )
+    .into();
+    let audio_encode_ms = encode_started.elapsed().as_millis();
+    log::debug!(
+        "voice latency: session={} record_stop_ms={} audio_encode_ms={} wav_bytes={} recording_ms={} sample_rate={} channels={}",
+        session_id,
+        record_stop_ms,
+        audio_encode_ms,
+        wav.len(),
+        recording.duration_ms,
+        recording.sample_rate,
+        recording.channels
     );
 
     if cancellation.is_cancelled() {
@@ -587,7 +623,7 @@ pub async fn process_recording(app: AppHandle) -> AppResult<()> {
 
     // Cache the turn audio and focus target so retry can re-use it if an error occurs
     mgr.set_last_turn(CachedTurn {
-        wav: wav.clone(),
+        wav: Arc::clone(&wav),
         duration_ms: recording.duration_ms,
         target,
     })
@@ -632,6 +668,11 @@ pub async fn process_recording(app: AppHandle) -> AppResult<()> {
         );
     }
     mgr.finish(session_id).await;
+    log::debug!(
+        "voice latency: session={} total_after_process_ms={}",
+        session_id,
+        process_started.elapsed().as_millis()
+    );
     result
 }
 
@@ -811,19 +852,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cached_turn_is_stored_and_cleared() {
+    async fn cached_turn_shares_exact_immutable_wav_and_clears_manager_reference() {
         let mgr = SessionManager::new();
         assert!(mgr.get_last_turn().await.is_none());
+        let wav: Arc<[u8]> = vec![1, 2, 3].into();
+        assert_eq!(Arc::strong_count(&wav), 1);
+
         mgr.set_last_turn(CachedTurn {
-            wav: vec![1, 2, 3],
+            wav: Arc::clone(&wav),
             duration_ms: 500,
             target: None,
         })
         .await;
+        assert_eq!(Arc::strong_count(&wav), 2);
+
         let cached = mgr.get_last_turn().await.expect("cached turn");
-        assert_eq!(cached.wav, vec![1, 2, 3]);
+        assert!(Arc::ptr_eq(&wav, &cached.wav));
+        assert_eq!(cached.wav.as_ref(), &[1, 2, 3]);
         assert_eq!(cached.duration_ms, 500);
+        assert_eq!(Arc::strong_count(&wav), 3);
+
+        drop(cached);
         mgr.clear_last_turn().await;
+        assert_eq!(Arc::strong_count(&wav), 1);
         assert!(mgr.get_last_turn().await.is_none());
     }
 }

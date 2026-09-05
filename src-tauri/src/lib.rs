@@ -114,7 +114,14 @@ pub fn run() {
 
             // ---- Onboarding: show settings on first run (no API key, not launched via autostart) ----
             let is_autostart = std::env::args().any(|arg| arg == "--autostart");
-            if !is_autostart && !settings_store.api_key_set() {
+            if is_autostart {
+                // Autostart skips onboarding, so warm the credential cache off the UI thread.
+                // The cache serializes concurrent first loads if recording starts immediately.
+                let settings_for_warm = settings_store.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let _ = settings_for_warm.api_key_set();
+                });
+            } else if !settings_store.api_key_set() {
                 if let Some(w) = app.get_webview_window("settings") {
                     let _ = w.show();
                     let _ = w.set_focus();

@@ -5,6 +5,21 @@ use crate::settings::SettingsStore;
 use crate::types::GeminiModelInfo;
 
 const API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta";
+const PREWARM_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn claim_prewarm(
+    last: &mut Option<std::time::Instant>,
+    now: std::time::Instant,
+    min_interval: std::time::Duration,
+) -> bool {
+    if let Some(previous) = *last {
+        if now.saturating_duration_since(previous) < min_interval {
+            return false;
+        }
+    }
+    *last = Some(now);
+    true
+}
 
 /// Validate an outgoing URL: http/https only, and reject localhost /
 /// loopback / private / reserved addresses. Defense-in-depth against a
@@ -45,6 +60,7 @@ fn validate_url(url: &str) -> AppResult<()> {
 pub struct GeminiClient {
     http: reqwest::Client,
     api_base: String,
+    last_prewarm: std::sync::Mutex<Option<std::time::Instant>>,
 }
 
 impl GeminiClient {
@@ -60,13 +76,21 @@ impl GeminiClient {
         Ok(Self {
             http,
             api_base: API_BASE.to_string(),
+            last_prewarm: std::sync::Mutex::new(None),
         })
     }
 
-    /// Pre-warm DNS and TLS 1.3 / HTTP/2 connection to Google Gemini API in the background.
-    /// By calling this when the user starts speaking, the connection is already hot and ready,
-    /// eliminating 150-300ms of handshake latency when the audio is ready to send.
+    /// Pre-warm DNS/TLS and the pooled connection to Google Gemini API in the background.
+    /// Closely repeated lifecycle calls share one warm-up attempt instead of issuing
+    /// overlapping HEAD requests for the same recording turn.
     pub fn prewarm(&self) {
+        {
+            let mut last = self.last_prewarm.lock().unwrap();
+            if !claim_prewarm(&mut last, std::time::Instant::now(), PREWARM_MIN_INTERVAL) {
+                return;
+            }
+        }
+
         let client = self.http.clone();
         let url = format!("{}/models?pageSize=1", self.api_base.trim_end_matches('/'));
         tauri::async_runtime::spawn(async move {
@@ -90,10 +114,23 @@ impl GeminiClient {
         audio_wav: &[u8],
         settings_snapshot: &crate::types::AppSettings,
     ) -> AppResult<String> {
+        let key_lookup_started = std::time::Instant::now();
         let api_key = settings.get_api_key()?;
+        let key_lookup_ms = key_lookup_started.elapsed().as_millis();
         let models = settings_snapshot.model_chain();
+        let base64_started = std::time::Instant::now();
         let audio_b64 =
             base64::Engine::encode(&base64::engine::general_purpose::STANDARD, audio_wav);
+        let base64_ms = base64_started.elapsed().as_millis();
+        let primary_model = models.first().map(String::as_str).unwrap_or("<none>");
+        log::debug!(
+            "gemini latency: model={} key_lookup_ms={} base64_ms={} wav_bytes={} base64_bytes={}",
+            primary_model,
+            key_lookup_ms,
+            base64_ms,
+            audio_wav.len(),
+            audio_b64.len()
+        );
 
         let mut last_error = AppError::BadResponse;
         for (index, model_name) in models.iter().enumerate() {
@@ -128,6 +165,7 @@ impl GeminiClient {
         audio_b64: &str,
         settings_snapshot: &crate::types::AppSettings,
     ) -> AppResult<String> {
+        let request_build_started = std::time::Instant::now();
         let url = self.url(&format!(
             "models/{}:generateContent",
             urlencoding::encode(model)
@@ -162,7 +200,9 @@ impl GeminiClient {
                 "parts": [{ "text": settings_snapshot.system_prompt }]
             });
         }
+        let request_build_ms = request_build_started.elapsed().as_millis();
 
+        let http_started = std::time::Instant::now();
         let resp = self
             .http
             .post(&url)
@@ -171,9 +211,19 @@ impl GeminiClient {
             .json(&body)
             .send()
             .await?;
+        let http_api_ms = http_started.elapsed().as_millis();
 
+        let response_parse_started = std::time::Instant::now();
         let status = resp.status();
         let payload: Value = resp.json().await.map_err(|_| AppError::BadResponse)?;
+        let response_parse_ms = response_parse_started.elapsed().as_millis();
+        log::debug!(
+            "gemini latency: model={} request_build_ms={} http_api_ms={} response_parse_ms={}",
+            model,
+            request_build_ms,
+            http_api_ms,
+            response_parse_ms
+        );
         if !status.is_success() {
             // If thinkingConfig caused a 400 rejection on an unsupported model variant,
             // retry once immediately without thinkingConfig.
@@ -190,7 +240,8 @@ impl GeminiClient {
                     .send()
                     .await?;
                 let retry_status = retry_resp.status();
-                let retry_payload: Value = retry_resp.json().await.map_err(|_| AppError::BadResponse)?;
+                let retry_payload: Value =
+                    retry_resp.json().await.map_err(|_| AppError::BadResponse)?;
                 if retry_status.is_success() {
                     return extract_text(&retry_payload);
                 }
@@ -304,4 +355,28 @@ fn extract_text(payload: &Value) -> AppResult<String> {
         return Err(AppError::BadResponse);
     }
     Ok(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn prewarm_throttle_allows_first_skips_recent_and_allows_later() {
+        let start = Instant::now();
+        let mut last = None;
+
+        assert!(claim_prewarm(&mut last, start, Duration::from_secs(5)));
+        assert!(!claim_prewarm(
+            &mut last,
+            start + Duration::from_secs(1),
+            Duration::from_secs(5)
+        ));
+        assert!(claim_prewarm(
+            &mut last,
+            start + Duration::from_secs(5),
+            Duration::from_secs(5)
+        ));
+    }
 }

@@ -102,9 +102,13 @@ pub async fn set_start_with_windows(
     {
         use tauri_plugin_autostart::ManagerExt;
         if enabled {
-            app.autolaunch().enable().map_err(|e| AppError::Settings(e.to_string()))?;
+            app.autolaunch()
+                .enable()
+                .map_err(|e| AppError::Settings(e.to_string()))?;
         } else {
-            app.autolaunch().disable().map_err(|e| AppError::Settings(e.to_string()))?;
+            app.autolaunch()
+                .disable()
+                .map_err(|e| AppError::Settings(e.to_string()))?;
         }
     }
     let snapshot = store.update(|s| s.start_with_windows = enabled)?;
