@@ -1,0 +1,106 @@
+:root {
+  --motion-instant: 90ms;
+  --motion-fast: 140ms;
+  --motion-standard: 200ms;
+  --motion-emphasis: 300ms;
+  --ease-out-premium: cubic-bezier(.2,.8,.2,1);
+}
+
+@keyframes overlay-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes overlay-exit {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(3px) scale(0.985);
+  }
+}
+
+@keyframes overlay-state-in {
+  from {
+    opacity: 0.35;
+    transform: translateY(2px) scale(0.995);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes overlay-processing-bar {
+  0%, 100% { transform: scaleY(0.55); opacity: 0.58; }
+  50% { transform: scaleY(1); opacity: 1; }
+}
+
+.overlay-surface {
+  transform-origin: center bottom;
+  will-change: opacity, transform;
+}
+
+.overlay-surface[data-lifecycle="visible"] {
+  animation: overlay-enter var(--motion-fast) var(--ease-out-premium) both;
+}
+
+.overlay-surface[data-lifecycle="exiting"] {
+  animation: overlay-exit var(--motion-fast) var(--ease-out-premium) both;
+  pointer-events: none;
+}
+
+.overlay-state-content {
+  animation: overlay-state-in var(--motion-standard) var(--ease-out-premium) both;
+}
+
+.overlay-processing-bar {
+  animation: overlay-processing-bar 900ms ease-in-out infinite;
+  transform-origin: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-standard: 100ms;
+    --motion-emphasis: 100ms;
+  }
+
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+  }
+
+  @keyframes overlay-enter {
+    from { opacity: 0; transform: none; }
+    to { opacity: 1; transform: none; }
+  }
+
+  @keyframes overlay-exit {
+    from { opacity: 1; transform: none; }
+    to { opacity: 0; transform: none; }
+  }
+
+  @keyframes overlay-state-in {
+    from { opacity: 0.55; transform: none; }
+    to { opacity: 1; transform: none; }
+  }
+
+  .overlay-surface[data-lifecycle="visible"],
+  .overlay-surface[data-lifecycle="exiting"],
+  .overlay-state-content {
+    animation-duration: 100ms;
+  }
+
+  .overlay-processing-bar {
+    animation: none;
+    opacity: 0.8;
+    transform: none;
+  }
+}
