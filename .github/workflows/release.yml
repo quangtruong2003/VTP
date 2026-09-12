@@ -1,0 +1,73 @@
+name: Release
+
+# Every push to main: bump the patch version, build the Windows
+# installers and open a draft GitHub release.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - run: npm ci
+
+      - name: Bump patch version
+        id: version
+        shell: bash
+        run: |
+          node <<'EOF'
+          const fs = require('fs');
+          const { execSync } = require('child_process');
+          execSync('npm version patch --no-git-tag-version', { stdio: 'inherit' });
+          const version = JSON.parse(fs.readFileSync('package.json', 'utf8')).version;
+          const confPath = 'src-tauri/tauri.conf.json';
+          const conf = JSON.parse(fs.readFileSync(confPath, 'utf8'));
+          conf.version = version;
+          fs.writeFileSync(confPath, JSON.stringify(conf, null, 2) + '\n');
+          const cargoPath = 'src-tauri/Cargo.toml';
+          const cargo = fs.readFileSync(cargoPath, 'utf8')
+            .replace(/^version = "[^"]+"/m, `version = "${version}"`);
+          fs.writeFileSync(cargoPath, cargo);
+          const lockPath = 'src-tauri/Cargo.lock';
+          const lock = fs.readFileSync(lockPath, 'utf8')
+            .replace(/(name = "voice-to-prompt"\nversion = ")[^"]+"/, `$1${version}"`);
+          fs.writeFileSync(lockPath, lock);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `new_version=${version}\n`);
+          EOF
+
+      # Commit the bump back so the next run keeps counting up.
+      # [skip ci] prevents this push from triggering the workflow again.
+      - name: Commit version bump
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B main
+          git pull --rebase origin main
+          git add package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
+          git commit -m "chore: bump version to v${{ steps.version.outputs.new_version }} [skip ci]" || echo "nothing to commit"
+          git push origin HEAD:main
+
+      # Builds NSIS + MSI (per bundle.targets in tauri.conf.json),
+      # uploads them as assets and opens a draft release for the tag.
+      - uses: tauri-apps/tauri-action@v0
+        with:
+          tagName: v${{ steps.version.outputs.new_version }}
+          releaseName: Voice to Prompt v${{ steps.version.outputs.new_version }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
