@@ -7,10 +7,10 @@ import {
   Settings2,
   TextCursorInput,
 } from "lucide-react";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { t, type UiLocale } from "@/lib/i18n";
 import { settingsApi } from "@/lib/settings";
 import { cn } from "@/lib/utils";
+import { UpdateDialog } from "./UpdateDialog";
 
 export type SettingsSection =
   | "general"
@@ -47,6 +47,7 @@ export function SettingsSidebar({
 }) {
   const [version, setVersion] = useState<string | null>(null);
   const [update, setUpdate] = useState<UpdateStatus>({ kind: "idle" });
+  const [updateDialog, setUpdateDialog] = useState<{ latest: string; url: string } | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -67,11 +68,12 @@ export function SettingsSidebar({
     settingsApi
       .checkUpdate()
       .then((info) => {
-        setUpdate(
-          info.update_available
-            ? { kind: "available", version: info.latest_version, url: info.release_url }
-            : { kind: "latest" },
-        );
+        if (info.update_available) {
+          setUpdate({ kind: "available", version: info.latest_version, url: info.release_url });
+          setUpdateDialog({ latest: info.latest_version, url: info.release_url });
+        } else {
+          setUpdate({ kind: "latest" });
+        }
       })
       .catch(() => setUpdate({ kind: "error" }));
   };
@@ -106,10 +108,10 @@ export function SettingsSidebar({
             </div>
             <button
               type="button"
-              onClick={() => void openUrl(update.url).catch(() => {})}
+              onClick={() => setUpdateDialog({ latest: update.version, url: update.url })}
               className="text-zinc-200 underline underline-offset-2 hover:text-white"
             >
-              {t(locale, "settings.downloadUpdate")}
+              {t(locale, "settings.viewUpdate")}
             </button>
           </div>
         ) : null}
@@ -130,6 +132,14 @@ export function SettingsSidebar({
           </button>
         ) : null}
       </div>
+      {updateDialog ? (
+        <UpdateDialog
+          latestVersion={updateDialog.latest}
+          releaseUrl={updateDialog.url}
+          locale={locale}
+          onClose={() => setUpdateDialog(null)}
+        />
+      ) : null}
     </nav>
   );
 }

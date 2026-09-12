@@ -30,6 +30,8 @@
     "global-shortcut:allow-register-all",
     "global-shortcut:allow-unregister-all",
     "opener:allow-open-url",
+    "updater:default",
+    "process:default",
     "autostart:allow-enable",
     "autostart:allow-disable",
     "autostart:allow-is-enabled"

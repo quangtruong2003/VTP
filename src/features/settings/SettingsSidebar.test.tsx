@@ -6,6 +6,7 @@ import { SettingsSidebar } from "./SettingsSidebar";
 const mocks = vi.hoisted(() => ({
   appVersion: vi.fn(),
   checkUpdate: vi.fn(),
+  check: vi.fn(),
   openUrl: vi.fn(),
 }));
 
@@ -14,6 +15,10 @@ vi.mock("@/lib/settings", () => ({
     appVersion: mocks.appVersion,
     checkUpdate: mocks.checkUpdate,
   },
+}));
+
+vi.mock("@tauri-apps/plugin-updater", () => ({
+  check: mocks.check,
 }));
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
@@ -30,6 +35,7 @@ describe("SettingsSidebar version and updates", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.appVersion.mockResolvedValue("0.1.2");
+    mocks.check.mockResolvedValue(null);
     mocks.openUrl.mockResolvedValue(undefined);
   });
 
@@ -40,7 +46,7 @@ describe("SettingsSidebar version and updates", () => {
     expect(screen.queryByText("VoiceToPrompt")).not.toBeInTheDocument();
   });
 
-  it("reports an available update and opens the release page", async () => {
+  it("opens the update dialog when an update is available", async () => {
     const user = userEvent.setup();
     mocks.checkUpdate.mockResolvedValue({
       current_version: "0.1.2",
@@ -54,8 +60,11 @@ describe("SettingsSidebar version and updates", () => {
     await waitFor(() =>
       expect(screen.getByText("Update available: v0.1.3")).toBeInTheDocument(),
     );
+    await waitFor(() =>
+      expect(screen.getByText("Update to v0.1.3 available")).toBeInTheDocument(),
+    );
 
-    await user.click(screen.getByRole("button", { name: "Download" }));
+    await user.click(screen.getByRole("button", { name: "Download manually" }));
     expect(mocks.openUrl).toHaveBeenCalledWith(
       "https://github.com/quangtruong2003/VTP/releases/tag/v0.1.3",
     );
