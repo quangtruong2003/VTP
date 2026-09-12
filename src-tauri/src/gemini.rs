@@ -190,36 +190,7 @@ impl GeminiClient {
             urlencoding::encode(model)
         ))?;
 
-        let mut generation_config = json!({
-            "temperature": settings_snapshot.temperature,
-            "maxOutputTokens": settings_snapshot.max_output_tokens
-        });
-
-        // For Gemini 2.5 models (e.g. gemini-2.5-flash) which default to "thinking" mode,
-        // setting thinkingBudget to 0 eliminates 2 - 4 seconds of internal reasoning delay,
-        // giving instant voice-to-text response while preserving maximum output quality.
-        if model.contains("2.5") || model.contains("thinking") {
-            generation_config["thinkingConfig"] = json!({
-                "thinkingBudget": 0
-            });
-        }
-
-        let mut body = json!({
-            "contents": [{
-                "role": "user",
-                "parts": [
-                    { "text": instructions_for(&settings_snapshot.language) },
-                    { "inline_data": { "mime_type": "audio/flac", "data": audio_b64 } }
-                ]
-            }],
-            "generationConfig": generation_config
-        });
-        let system_prompt = selected_prompt(settings_snapshot);
-        if !system_prompt.is_empty() {
-            body["systemInstruction"] = json!({
-                "parts": [{ "text": system_prompt }]
-            });
-        }
+        let mut body = build_request_body(model, audio_b64, settings_snapshot);
         let request_build_ms = request_build_started.elapsed().as_millis();
 
         let http_started = std::time::Instant::now();
@@ -330,14 +301,57 @@ impl GeminiClient {
     }
 }
 
-fn instructions_for(language: &str) -> String {
-    let language_instruction = match language {
-        "auto" => "Reply in the same language the user spoke.".to_string(),
-        other => format!("Reply in {other}."),
-    };
-    format!(
-        "Transcribe the attached speech and produce the requested result. {language_instruction} Return only valid JSON with exactly these string fields: {{\"transcript\":\"...\",\"result\":\"...\"}}."
-    )
+/// The only instruction ever sent next to the audio: an explicit
+/// response-language override. With language "auto" no text part is sent at
+/// all, so a custom system prompt (e.g. verbatim transcription) is never
+/// fought by a competing hardcoded instruction.
+fn language_instruction(language: &str) -> Option<String> {
+    if language == "auto" {
+        None
+    } else {
+        Some(format!("Reply in {language}."))
+    }
+}
+
+fn build_request_body(
+    model: &str,
+    audio_b64: &str,
+    settings: &crate::types::AppSettings,
+) -> Value {
+    let mut generation_config = json!({
+        "temperature": settings.temperature,
+        "maxOutputTokens": settings.max_output_tokens
+    });
+
+    // For Gemini 2.5 models (e.g. gemini-2.5-flash) which default to "thinking" mode,
+    // setting thinkingBudget to 0 eliminates 2 - 4 seconds of internal reasoning delay,
+    // giving instant voice-to-text response while preserving maximum output quality.
+    if model.contains("2.5") || model.contains("thinking") {
+        generation_config["thinkingConfig"] = json!({
+            "thinkingBudget": 0
+        });
+    }
+
+    let mut parts = Vec::new();
+    if let Some(instruction) = language_instruction(&settings.language) {
+        parts.push(json!({ "text": instruction }));
+    }
+    parts.push(json!({ "inline_data": { "mime_type": "audio/flac", "data": audio_b64 } }));
+
+    let mut body = json!({
+        "contents": [{
+            "role": "user",
+            "parts": parts
+        }],
+        "generationConfig": generation_config
+    });
+    let system_prompt = selected_prompt(settings);
+    if !system_prompt.is_empty() {
+        body["systemInstruction"] = json!({
+            "parts": [{ "text": system_prompt }]
+        });
+    }
+    body
 }
 
 fn selected_prompt(settings: &crate::types::AppSettings) -> String {
@@ -500,5 +514,61 @@ mod tests {
             start + Duration::from_secs(5),
             Duration::from_secs(5)
         ));
+    }
+
+    fn request_test_settings(system_prompt: &str, language: &str) -> crate::types::AppSettings {
+        crate::types::AppSettings {
+            system_prompt: system_prompt.into(),
+            language: language.into(),
+            prompt_profile_id: String::new(),
+            temperature: 0.5,
+            max_output_tokens: 8192,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn auto_language_sends_audio_and_system_prompt_only() {
+        let settings = request_test_settings("Custom verbatim rules", "auto");
+
+        let body = build_request_body("gemini-2.0-flash", "AAA", &settings);
+
+        let parts = body["contents"][0]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["inline_data"]["mime_type"], "audio/flac");
+        assert_eq!(parts[0]["inline_data"]["data"], "AAA");
+        assert_eq!(
+            body["systemInstruction"]["parts"][0]["text"],
+            "Custom verbatim rules"
+        );
+        assert_eq!(body["generationConfig"]["temperature"], 0.5);
+        assert_eq!(body["generationConfig"]["maxOutputTokens"], 8192);
+    }
+
+    #[test]
+    fn explicit_language_keeps_only_the_language_override() {
+        let settings = request_test_settings("Custom verbatim rules", "Vietnamese");
+
+        let body = build_request_body("gemini-2.0-flash", "AAA", &settings);
+
+        let parts = body["contents"][0]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["text"], "Reply in Vietnamese.");
+        assert!(parts[1].get("inline_data").is_some());
+        assert_eq!(
+            body["systemInstruction"]["parts"][0]["text"],
+            "Custom verbatim rules"
+        );
+    }
+
+    #[test]
+    fn empty_system_prompt_sends_audio_only() {
+        let settings = request_test_settings("   ", "auto");
+
+        let body = build_request_body("gemini-2.0-flash", "AAA", &settings);
+
+        let parts = body["contents"][0]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert!(body.get("systemInstruction").is_none());
     }
 }

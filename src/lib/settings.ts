@@ -8,6 +8,7 @@ import type {
   MicLevelPayload,
   PlatformInfo,
   PublicSettings,
+  UpdateInfo,
 } from "@/lib/types";
 import { RUST_EVENTS } from "@/lib/types";
 
@@ -26,6 +27,8 @@ export const settingsApi = {
   setStartWithWindows: (enabled: boolean) =>
     invoke<PublicSettings>("set_start_with_windows", { enabled }),
   platformInfo: () => invoke<PlatformInfo>("platform_info"),
+  appVersion: () => invoke<string>("app_version"),
+  checkUpdate: () => invoke<UpdateInfo>("check_update"),
   connectApiKey: (key: string) => invoke<void>("connect_api_key", { key }),
   deleteApiKey: () => invoke<void>("delete_api_key"),
   listModels: () => invoke<GeminiModelInfo[]>("list_models"),

@@ -76,6 +76,13 @@ export interface PlatformInfo {
   primary_modifier: string;
 }
 
+export interface UpdateInfo {
+  current_version: string;
+  latest_version: string;
+  update_available: boolean;
+  release_url: string;
+}
+
 export type ErrorCode =
   | "microphone_permission"
   | "microphone_device"

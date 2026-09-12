@@ -207,6 +207,15 @@ pub struct AudioDeviceInfo {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct UpdateInfo {
+    pub current_version: String,
+    pub latest_version: String,
+    pub update_available: bool,
+    pub release_url: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct MicLevelPayload {
     pub level: u8,
 }

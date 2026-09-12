@@ -49,6 +49,8 @@ pub fn run() {
             commands::set_history_shortcut,
             commands::set_settings_shortcut,
             commands::platform_info,
+            commands::app_version,
+            commands::check_update,
             commands::connect_api_key,
             commands::delete_api_key,
             commands::list_models,

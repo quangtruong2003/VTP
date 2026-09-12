@@ -345,6 +345,71 @@ pub fn platform_info() -> PlatformInfo {
     }
 }
 
+const UPDATE_CHECK_URL: &str =
+    "https://api.github.com/repos/quangtruong2003/VTP/releases/latest";
+const UPDATE_FALLBACK_URL: &str = "https://github.com/quangtruong2003/VTP/releases";
+
+#[tauri::command]
+pub fn app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+fn version_parts(version: &str) -> Vec<u64> {
+    version
+        .trim()
+        .trim_start_matches(['v', 'V'])
+        .split('.')
+        .map(|part| {
+            part.chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .parse()
+                .unwrap_or(0)
+        })
+        .collect()
+}
+
+fn is_newer_version(current: &str, latest: &str) -> bool {
+    let (mut current, mut latest) = (version_parts(current), version_parts(latest));
+    let width = current.len().max(latest.len()).max(1);
+    current.resize(width, 0);
+    latest.resize(width, 0);
+    latest > current
+}
+
+#[tauri::command]
+pub async fn check_update() -> AppResult<crate::types::UpdateInfo> {
+    let http = reqwest::Client::builder()
+        .user_agent("voice-to-prompt")
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+    let payload: serde_json::Value = http
+        .get(UPDATE_CHECK_URL)
+        .send()
+        .await?
+        .error_for_status()
+        .map_err(|error| AppError::Network(error.to_string()))?
+        .json()
+        .await
+        .map_err(|_| AppError::BadResponse)?;
+    let tag = payload["tag_name"].as_str().unwrap_or_default().trim();
+    if tag.is_empty() {
+        return Err(AppError::BadResponse);
+    }
+    let release_url = payload["html_url"]
+        .as_str()
+        .filter(|url| !url.is_empty())
+        .unwrap_or(UPDATE_FALLBACK_URL)
+        .to_string();
+    let current = env!("CARGO_PKG_VERSION");
+    Ok(crate::types::UpdateInfo {
+        current_version: current.to_string(),
+        latest_version: tag.to_string(),
+        update_available: is_newer_version(current, tag),
+        release_url,
+    })
+}
+
 async fn validate_then_store_api_key<V, VFut, S>(key: &str, validate: V, store: S) -> AppResult<()>
 where
     V: FnOnce(String) -> VFut,
@@ -626,6 +691,16 @@ pub fn open_settings(app: AppHandle, section: Option<String>) -> AppResult<()> {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn newer_release_detection_ignores_v_prefix_and_width() {
+        assert!(is_newer_version("0.1.2", "v0.1.3"));
+        assert!(is_newer_version("0.1.2", "0.1.10"));
+        assert!(is_newer_version("0.1", "0.1.1"));
+        assert!(!is_newer_version("0.1.3", "v0.1.3"));
+        assert!(!is_newer_version("0.2.0", "0.1.9"));
+        assert!(!is_newer_version("0.1.2", "0.1.2-beta"));
+    }
 
     #[tokio::test]
     async fn invalid_candidate_api_key_is_never_persisted() {

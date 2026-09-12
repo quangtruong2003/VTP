@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
   historyCopy: vi.fn(),
   historyClear: vi.fn(),
   openHistory: vi.fn(),
+  appVersion: vi.fn(),
+  checkUpdate: vi.fn(),
   onSettingsSection: vi.fn(),
   onMicLevel: vi.fn(),
   toggle: vi.fn(),
@@ -41,6 +43,8 @@ vi.mock("@/lib/settings", () => ({
     historyCopy: mocks.historyCopy,
     historyClear: mocks.historyClear,
     openHistory: mocks.openHistory,
+    appVersion: mocks.appVersion,
+    checkUpdate: mocks.checkUpdate,
   },
   onSettingsSection: mocks.onSettingsSection,
   onMicLevel: mocks.onMicLevel,
@@ -110,6 +114,13 @@ describe("SettingsApp Task 12 production integration", () => {
     mocks.historyCopy.mockResolvedValue(undefined);
     mocks.historyClear.mockResolvedValue(undefined);
     mocks.openHistory.mockResolvedValue(undefined);
+    mocks.appVersion.mockResolvedValue("0.1.2");
+    mocks.checkUpdate.mockResolvedValue({
+      current_version: "0.1.2",
+      latest_version: "0.1.2",
+      update_available: false,
+      release_url: "https://github.com/quangtruong2003/VTP/releases",
+    });
     mocks.get.mockResolvedValue({ ...baseSettings } satisfies PublicSettings);
     mocks.connectApiKey.mockResolvedValue(undefined);
     mocks.listModels.mockResolvedValue([]);
