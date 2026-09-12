@@ -45,7 +45,7 @@ jobs:
           fs.writeFileSync(cargoPath, cargo);
           const lockPath = 'src-tauri/Cargo.lock';
           const lock = fs.readFileSync(lockPath, 'utf8')
-            .replace(/(name = "voice-to-prompt"\nversion = ")[^"]+"/, `$1${version}"`);
+            .replace(/(name = "voice-to-prompt"\r?\nversion = ")[^"]+"/, `$1${version}"`);
           fs.writeFileSync(lockPath, lock);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `new_version=${version}\n`);
           EOF
@@ -58,7 +58,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -B main
-          git pull --rebase origin main
+          git pull --rebase --autostash origin main
           git add package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
           git commit -m "chore: bump version to v${{ steps.version.outputs.new_version }} [skip ci]" || echo "nothing to commit"
           git push origin HEAD:main
