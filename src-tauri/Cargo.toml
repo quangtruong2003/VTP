@@ -1,6 +1,6 @@
 [package]
 name = "voice-to-prompt"
-version = "0.1.1"
+version = "0.1.2"
 description = "Global voice-to-prompt AI assistant"
 authors = ["you"]
 edition = "2021"
