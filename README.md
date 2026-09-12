@@ -22,7 +22,7 @@ Built with **Rust + Tauri 2** (backend) and **React + TypeScript + shadcn/ui**
   automatic **Ctrl+V fallback** when an app blocks synthetic input
   (elevated processes, some terminals, games)
 - Always copied to the clipboard as well
-- API key stored in the **OS credential manager** (Windows Credential
+- API keys stored in the **OS credential manager** (Windows Credential
   Manager / macOS Keychain) — never written to disk, never sent to the
   webview
 - Dynamic model listing from your key, model picker, system prompt,
@@ -76,7 +76,7 @@ art via `npm run tauri icon path/to/icon.png` before shipping.
 
 ## Security model
 
-- The API key never leaves the Rust process except to Google's endpoint,
+- The API keys never leave the Rust process except to Google's endpoint,
   attached as the `x-goog-api-key` header (not a query parameter).
 - The webview only ever receives `api_key_set: boolean`.
 - All network calls go to `generativelanguage.googleapis.com`; outgoing URLs

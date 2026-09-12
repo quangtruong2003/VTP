@@ -199,6 +199,15 @@ pub struct GeminiModelInfo {
     pub input_token_limit: Option<u64>,
 }
 
+/// Key slot for the frontend list. Never carries key material — the index
+/// plus primary flag is all the UI needs to manage the ordered keychain.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ApiKeySlot {
+    pub index: usize,
+    pub is_primary: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct AudioDeviceInfo {

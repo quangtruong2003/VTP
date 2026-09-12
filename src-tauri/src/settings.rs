@@ -37,62 +37,86 @@ fn read_settings_file(path: &std::path::Path) -> AppResult<AppSettings> {
 enum ApiKeyCache {
     Unloaded,
     Missing,
-    Present(String),
+    Present(Vec<String>),
 }
 
-fn get_cached_api_key<F>(cache: &Mutex<ApiKeyCache>, load: F) -> AppResult<String>
+fn get_cached_api_keys<F>(cache: &Mutex<ApiKeyCache>, load: F) -> AppResult<Vec<String>>
 where
-    F: FnOnce() -> AppResult<Option<String>>,
+    F: FnOnce() -> AppResult<Vec<String>>,
 {
     let mut guard = cache.lock().unwrap();
     match &*guard {
-        ApiKeyCache::Present(key) => return Ok(key.clone()),
+        ApiKeyCache::Present(keys) => return Ok(keys.clone()),
         ApiKeyCache::Missing => return Err(AppError::MissingApiKey),
         ApiKeyCache::Unloaded => {}
     }
 
-    match load()? {
-        Some(key) if !key.trim().is_empty() => {
-            *guard = ApiKeyCache::Present(key.clone());
-            Ok(key)
-        }
-        Some(_) | None => {
-            *guard = ApiKeyCache::Missing;
-            Err(AppError::MissingApiKey)
-        }
+    let keys = load()?;
+    if keys.is_empty() {
+        *guard = ApiKeyCache::Missing;
+        return Err(AppError::MissingApiKey);
     }
+    *guard = ApiKeyCache::Present(keys.clone());
+    Ok(keys)
 }
 
 fn api_key_set_cached<F>(cache: &Mutex<ApiKeyCache>, load: F) -> bool
 where
-    F: FnOnce() -> AppResult<Option<String>>,
+    F: FnOnce() -> AppResult<Vec<String>>,
 {
-    get_cached_api_key(cache, load).is_ok()
+    get_cached_api_keys(cache, load)
+        .map(|keys| !keys.is_empty())
+        .unwrap_or(false)
 }
 
-fn set_cached_api_key<F>(cache: &Mutex<ApiKeyCache>, key: &str, persist: F) -> AppResult<()>
+fn mutate_cached_api_keys<L, P>(
+    cache: &Mutex<ApiKeyCache>,
+    load: L,
+    persist: P,
+    update: impl FnOnce(&mut Vec<String>),
+) -> AppResult<Vec<String>>
 where
-    F: FnOnce(&str) -> AppResult<()>,
+    L: FnOnce() -> AppResult<Vec<String>>,
+    P: FnOnce(&[String]) -> AppResult<()>,
 {
-    let key = key.trim();
-    if key.is_empty() {
-        return Err(AppError::Keyring("API key cannot be empty".into()));
+    let mut guard = cache.lock().unwrap();
+    let (current, fresh) = match &*guard {
+        ApiKeyCache::Present(keys) => (keys.clone(), false),
+        ApiKeyCache::Missing => (Vec::new(), false),
+        ApiKeyCache::Unloaded => (load()?, true),
+    };
+    let mut updated = current.clone();
+    update(&mut updated);
+    if fresh || updated != current {
+        if updated != current {
+            persist(&updated)?;
+        }
+        *guard = if updated.is_empty() {
+            ApiKeyCache::Missing
+        } else {
+            ApiKeyCache::Present(updated.clone())
+        };
     }
-
-    let mut guard = cache.lock().unwrap();
-    persist(key)?;
-    *guard = ApiKeyCache::Present(key.to_string());
-    Ok(())
+    Ok(updated)
 }
 
-fn delete_cached_api_key<F>(cache: &Mutex<ApiKeyCache>, delete: F) -> AppResult<()>
-where
-    F: FnOnce() -> AppResult<()>,
-{
-    let mut guard = cache.lock().unwrap();
-    delete()?;
-    *guard = ApiKeyCache::Missing;
-    Ok(())
+/// The keyring holds a JSON array of keys, oldest... first entry is primary.
+/// A bare string is a legacy single-key entry and migrates to a one-element
+/// list on read.
+fn parse_stored_api_keys(stored: &str) -> Vec<String> {
+    if let Ok(keys) = serde_json::from_str::<Vec<String>>(stored.trim()) {
+        keys.into_iter()
+            .map(|key| key.trim().to_string())
+            .filter(|key| !key.is_empty())
+            .collect()
+    } else {
+        let trimmed = stored.trim();
+        if trimmed.is_empty() {
+            Vec::new()
+        } else {
+            vec![trimmed.to_string()]
+        }
+    }
 }
 
 /// All persisted state: non-secret settings in settings.json (in the OS
@@ -145,44 +169,102 @@ impl SettingsStore {
         Ok(candidate)
     }
 
-    // ---- API key (OS credential store only) ----
+    // ---- API keys (OS credential store only, ordered list, first is primary) ----
 
     fn keyring_entry() -> keyring::Result<keyring::Entry> {
         keyring::Entry::new(SERVICE, KEY_ENTRY)
     }
 
-    fn load_api_key_from_keyring() -> AppResult<Option<String>> {
+    fn load_api_keys_from_keyring() -> AppResult<Vec<String>> {
         let entry = Self::keyring_entry()?;
         match entry.get_password() {
-            Ok(key) => Ok(Some(key)),
-            Err(keyring::Error::NoEntry) => Ok(None),
+            Ok(stored) => Ok(parse_stored_api_keys(&stored)),
+            Err(keyring::Error::NoEntry) => Ok(Vec::new()),
             Err(error) => Err(AppError::from(error)),
         }
     }
 
-    pub fn api_key_set(&self) -> bool {
-        api_key_set_cached(&self.api_key_cache, Self::load_api_key_from_keyring)
-    }
-
-    pub fn get_api_key(&self) -> AppResult<String> {
-        get_cached_api_key(&self.api_key_cache, Self::load_api_key_from_keyring)
-    }
-
-    pub fn set_api_key(&self, key: &str) -> AppResult<()> {
-        set_cached_api_key(&self.api_key_cache, key, |candidate| {
-            let entry = Self::keyring_entry()?;
-            entry.set_password(candidate).map_err(AppError::from)
-        })
-    }
-
-    pub fn delete_api_key(&self) -> AppResult<()> {
-        delete_cached_api_key(&self.api_key_cache, || {
-            let entry = Self::keyring_entry()?;
+    fn persist_api_keys(keys: &[String]) -> AppResult<()> {
+        let entry = Self::keyring_entry()?;
+        if keys.is_empty() {
             match entry.delete_credential() {
                 Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
                 Err(error) => Err(AppError::from(error)),
             }
+        } else {
+            let raw =
+                serde_json::to_string(keys).map_err(|e| AppError::Keyring(e.to_string()))?;
+            entry.set_password(&raw).map_err(AppError::from)
+        }
+    }
+
+    fn mutate_keys(&self, update: impl FnOnce(&mut Vec<String>)) -> AppResult<Vec<String>> {
+        mutate_cached_api_keys(
+            &self.api_key_cache,
+            Self::load_api_keys_from_keyring,
+            Self::persist_api_keys,
+            update,
+        )
+    }
+
+    fn checked_key(key: &str) -> AppResult<String> {
+        let key = key.trim().to_string();
+        if key.is_empty() {
+            return Err(AppError::Keyring("API key cannot be empty".into()));
+        }
+        Ok(key)
+    }
+
+    pub fn api_key_set(&self) -> bool {
+        api_key_set_cached(&self.api_key_cache, Self::load_api_keys_from_keyring)
+    }
+
+    pub fn get_api_keys(&self) -> AppResult<Vec<String>> {
+        get_cached_api_keys(&self.api_key_cache, Self::load_api_keys_from_keyring)
+    }
+
+    /// Append a key for fallback. Duplicates are ignored.
+    pub fn add_api_key(&self, key: &str) -> AppResult<Vec<String>> {
+        let key = Self::checked_key(key)?;
+        self.mutate_keys(|keys| {
+            if !keys.contains(&key) {
+                keys.push(key.clone());
+            }
         })
+    }
+
+    /// Insert a key at the front, making it primary.
+    pub fn connect_api_key(&self, key: &str) -> AppResult<Vec<String>> {
+        let key = Self::checked_key(key)?;
+        self.mutate_keys(|keys| {
+            keys.retain(|existing| existing != &key);
+            keys.insert(0, key.clone());
+        })
+    }
+
+    pub fn remove_api_key(&self, index: usize) -> AppResult<Vec<String>> {
+        self.mutate_keys(|keys| {
+            if index < keys.len() {
+                keys.remove(index);
+            }
+        })
+    }
+
+    pub fn set_primary_api_key(&self, index: usize) -> AppResult<Vec<String>> {
+        self.mutate_keys(|keys| {
+            if index < keys.len() {
+                let key = keys.remove(index);
+                keys.insert(0, key);
+            }
+        })
+    }
+
+    /// Drop rejected keys so later turns stop wasting attempts on them.
+    pub fn prune_api_keys(&self, dead: &[String]) -> AppResult<Vec<String>> {
+        if dead.is_empty() {
+            return self.get_api_keys();
+        }
+        self.mutate_keys(|keys| keys.retain(|key| !dead.contains(key)))
     }
 }
 
@@ -265,19 +347,19 @@ mod tests {
         let cache = Mutex::new(ApiKeyCache::Unloaded);
         let loads = AtomicUsize::new(0);
 
-        let first = get_cached_api_key(&cache, || {
+        let first = get_cached_api_keys(&cache, || {
             loads.fetch_add(1, Ordering::Relaxed);
-            Ok(Some("secret-key".into()))
+            Ok(vec!["secret-key".into()])
         })
         .unwrap();
-        let second = get_cached_api_key(&cache, || {
+        let second = get_cached_api_keys(&cache, || {
             loads.fetch_add(1, Ordering::Relaxed);
-            Ok(Some("should-not-load".into()))
+            Ok(vec!["should-not-load".into()])
         })
         .unwrap();
 
-        assert_eq!(first, "secret-key");
-        assert_eq!(second, "secret-key");
+        assert_eq!(first, ["secret-key"]);
+        assert_eq!(second, ["secret-key"]);
         assert_eq!(loads.load(Ordering::Relaxed), 1);
     }
 
@@ -286,13 +368,13 @@ mod tests {
         let cache = Mutex::new(ApiKeyCache::Unloaded);
         let loads = AtomicUsize::new(0);
 
-        let first = get_cached_api_key(&cache, || {
+        let first = get_cached_api_keys(&cache, || {
             loads.fetch_add(1, Ordering::Relaxed);
-            Ok(None)
+            Ok(Vec::new())
         });
-        let second = get_cached_api_key(&cache, || {
+        let second = get_cached_api_keys(&cache, || {
             loads.fetch_add(1, Ordering::Relaxed);
-            Ok(Some("unexpected".into()))
+            Ok(vec!["unexpected".into()])
         });
 
         assert!(matches!(first, Err(AppError::MissingApiKey)));
@@ -316,13 +398,13 @@ mod tests {
                 let start = Arc::clone(&start);
                 scope.spawn(move || {
                     start.wait();
-                    let key = get_cached_api_key(&cache, || {
+                    let keys = get_cached_api_keys(&cache, || {
                         loads.fetch_add(1, Ordering::Relaxed);
                         std::thread::sleep(std::time::Duration::from_millis(10));
-                        Ok(Some("secret-key".into()))
+                        Ok(vec!["secret-key".into()])
                     })
                     .unwrap();
-                    assert_eq!(key, "secret-key");
+                    assert_eq!(keys, ["secret-key"]);
                 });
             }
         });
@@ -331,69 +413,110 @@ mod tests {
     }
 
     #[test]
-    fn successful_replace_updates_memory_cache() {
-        let cache = Mutex::new(ApiKeyCache::Present("old-key".into()));
-        let persisted = Mutex::new(Vec::<String>::new());
+    fn mutate_appends_once_and_skips_duplicate_persist() {
+        let cache = Mutex::new(ApiKeyCache::Present(vec!["old-key".into()]));
+        let persists = AtomicUsize::new(0);
+        let add = |cache: &Mutex<ApiKeyCache>, candidate: &str| {
+            let candidate = candidate.to_string();
+            mutate_cached_api_keys(
+                cache,
+                || panic!("populated cache must not reload"),
+                |_| {
+                    persists.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
+                },
+                |keys| {
+                    if !keys.contains(&candidate) {
+                        keys.push(candidate.clone());
+                    }
+                },
+            )
+        };
 
-        set_cached_api_key(&cache, "  new-key  ", |candidate| {
-            persisted.lock().unwrap().push(candidate.to_string());
-            Ok(())
-        })
-        .unwrap();
-
-        assert_eq!(persisted.lock().unwrap().as_slice(), &["new-key"]);
+        assert_eq!(add(&cache, "new-key").unwrap(), ["old-key", "new-key"]);
+        assert_eq!(add(&cache, "new-key").unwrap(), ["old-key", "new-key"]);
+        assert_eq!(persists.load(Ordering::Relaxed), 1);
         assert_eq!(
-            get_cached_api_key(&cache, || panic!("cache should be populated")).unwrap(),
-            "new-key"
+            get_cached_api_keys(&cache, || panic!("cache should be populated")).unwrap(),
+            ["old-key", "new-key"]
         );
     }
 
     #[test]
-    fn failed_replace_does_not_publish_candidate_cache() {
-        let cache = Mutex::new(ApiKeyCache::Present("old-key".into()));
+    fn failed_persist_does_not_publish_candidate_cache() {
+        let cache = Mutex::new(ApiKeyCache::Present(vec!["old-key".into()]));
 
-        let result = set_cached_api_key(&cache, "new-key", |_candidate| {
-            Err(AppError::Keyring("write failed".into()))
-        });
+        let result = mutate_cached_api_keys(
+            &cache,
+            || panic!("populated cache must not reload"),
+            |_candidates| Err(AppError::Keyring("write failed".into())),
+            |keys| keys.push("new-key".into()),
+        );
 
         assert!(result.is_err());
         assert_eq!(
-            get_cached_api_key(&cache, || panic!("old cache should remain truthful")).unwrap(),
-            "old-key"
+            get_cached_api_keys(&cache, || panic!("old cache should remain truthful")).unwrap(),
+            ["old-key"]
         );
     }
 
     #[test]
-    fn successful_delete_marks_cache_missing() {
-        let cache = Mutex::new(ApiKeyCache::Present("old-key".into()));
+    fn mutate_to_empty_marks_cache_missing() {
+        let cache = Mutex::new(ApiKeyCache::Present(vec!["old-key".into()]));
         let deletes = AtomicUsize::new(0);
 
-        delete_cached_api_key(&cache, || {
-            deletes.fetch_add(1, Ordering::Relaxed);
-            Ok(())
-        })
+        mutate_cached_api_keys(
+            &cache,
+            || panic!("populated cache must not reload"),
+            |candidates| {
+                assert!(candidates.is_empty());
+                deletes.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            },
+            |keys| keys.clear(),
+        )
         .unwrap();
 
         assert_eq!(deletes.load(Ordering::Relaxed), 1);
         assert!(matches!(
-            get_cached_api_key(&cache, || panic!(
-                "deleted key should stay cached as missing"
+            get_cached_api_keys(&cache, || panic!(
+                "deleted keys should stay cached as missing"
             )),
             Err(AppError::MissingApiKey)
         ));
     }
 
     #[test]
-    fn failed_delete_preserves_previous_cache_state() {
-        let cache = Mutex::new(ApiKeyCache::Present("old-key".into()));
+    fn failed_empty_persist_preserves_previous_cache_state() {
+        let cache = Mutex::new(ApiKeyCache::Present(vec!["old-key".into()]));
 
-        let result =
-            delete_cached_api_key(&cache, || Err(AppError::Keyring("delete failed".into())));
+        let result = mutate_cached_api_keys(
+            &cache,
+            || panic!("populated cache must not reload"),
+            |_candidates| Err(AppError::Keyring("delete failed".into())),
+            |keys| keys.clear(),
+        );
 
         assert!(result.is_err());
         assert_eq!(
-            get_cached_api_key(&cache, || panic!("old cache should remain available")).unwrap(),
-            "old-key"
+            get_cached_api_keys(&cache, || panic!("old cache should remain available")).unwrap(),
+            ["old-key"]
         );
+    }
+
+    #[test]
+    fn stored_keys_parse_legacy_single_and_json_lists() {
+        assert_eq!(parse_stored_api_keys("raw-legacy-key"), ["raw-legacy-key"]);
+        assert_eq!(
+            parse_stored_api_keys(r#"["k1", "k2"]"#),
+            ["k1", "k2"]
+        );
+        assert_eq!(
+            parse_stored_api_keys("  [\"k1\", \"\", \"  k2\" ]  "),
+            ["k1", "k2"]
+        );
+        assert!(parse_stored_api_keys("").is_empty());
+        assert!(parse_stored_api_keys("   ").is_empty());
+        assert!(parse_stored_api_keys("[]").is_empty());
     }
 }

@@ -7,7 +7,7 @@ import { SectionCard } from "@/components/section-card";
 import { SettingRow } from "@/components/setting-row";
 import { StatusBadge } from "@/components/status-badge";
 import { promptProfileLabel, t, type UiLocale } from "@/lib/i18n";
-import type { AppSettings, GeminiModelInfo, PromptProfile } from "@/lib/types";
+import type { ApiKeySlot, AppSettings, GeminiModelInfo, PromptProfile } from "@/lib/types";
 
 const DEFAULT_SYSTEM_PROMPT =
   "You are a helpful assistant. The user speaks to you and their speech is transcribed by the model. Respond with text that can be directly inserted into the application they were typing in. Be concise and match the user's language. Do not add markdown formatting unless asked.";
@@ -43,8 +43,10 @@ export function AiPromptSection({
   models,
   modelsLoading,
   modelsError,
-  onConnect,
-  onDisconnect,
+  apiKeys,
+  onAddKey,
+  onRemoveKey,
+  onSetPrimaryKey,
   onLoadModels,
   onUpdateImmediate,
   onUpdateDebounced,
@@ -54,27 +56,25 @@ export function AiPromptSection({
   models: GeminiModelInfo[];
   modelsLoading: boolean;
   modelsError?: boolean;
-  onConnect: (key: string) => Promise<void>;
-  onDisconnect: () => Promise<void>;
+  apiKeys: ApiKeySlot[];
+  onAddKey: (key: string) => Promise<void>;
+  onRemoveKey: (index: number) => Promise<void>;
+  onSetPrimaryKey: (index: number) => Promise<void>;
   onLoadModels: () => Promise<void>;
   onUpdateImmediate: (patch: Partial<AppSettings>) => void;
   onUpdateDebounced: (patch: Partial<AppSettings>) => void;
 }) {
-  const [connected, setConnected] = useState(settings.api_key_set);
-  const [replaceMode, setReplaceMode] = useState(false);
+  const connected = apiKeys.length > 0;
   const [apiKey, setApiKey] = useState("");
   const [connecting, setConnecting] = useState(false);
-  const [disconnecting, setDisconnecting] = useState(false);
   const [connectionError, setConnectionError] = useState(false);
+  const [busyKeyIndex, setBusyKeyIndex] = useState<number | null>(null);
+  const [keyOpError, setKeyOpError] = useState(false);
   const [openUrlError, setOpenUrlError] = useState(false);
   const [advanced, setAdvanced] = useState(false);
   const [customProfileName, setCustomProfileName] = useState("");
   const [customProfilePrompt, setCustomProfilePrompt] = useState("");
   const loadedModels = useRef(false);
-
-  useEffect(() => {
-    setConnected(settings.api_key_set);
-  }, [settings.api_key_set]);
 
   useEffect(() => {
     if (!connected) {
@@ -87,15 +87,13 @@ export function AiPromptSection({
     }
   }, [connected, onLoadModels]);
 
-  const connect = async () => {
+  const addKey = async () => {
     const candidate = apiKey.trim();
     if (!candidate || connecting) return;
     setConnecting(true);
     setConnectionError(false);
     try {
-      await onConnect(candidate);
-      setConnected(true);
-      setReplaceMode(false);
+      await onAddKey(candidate);
       setApiKey("");
       loadedModels.current = false;
     } catch {
@@ -105,19 +103,16 @@ export function AiPromptSection({
     }
   };
 
-  const disconnect = async () => {
-    if (disconnecting) return;
-    setConnectionError(false);
-    setDisconnecting(true);
+  const runKeyOp = async (index: number, op: (index: number) => Promise<void>) => {
+    if (busyKeyIndex !== null) return;
+    setKeyOpError(false);
+    setBusyKeyIndex(index);
     try {
-      await onDisconnect();
-      setConnected(false);
-      setReplaceMode(false);
-      setApiKey("");
+      await op(index);
     } catch {
-      setConnectionError(true);
+      setKeyOpError(true);
     } finally {
-      setDisconnecting(false);
+      setBusyKeyIndex(null);
     }
   };
 
@@ -173,57 +168,101 @@ export function AiPromptSection({
         description={t(locale, "settings.aiConnectionDesc")}
       >
         <div className="space-y-2.5">
-          {connected && !replaceMode ? (
+          {connected ? (
             <div className="flex items-center justify-between gap-4">
               <StatusBadge tone="success">{t(locale, "settings.connected")}</StatusBadge>
-              <div className="flex items-center gap-2">
-                <Button type="button" size="sm" variant="outline" className="h-7 px-2.5 text-xs" onClick={() => setReplaceMode(true)}>
-                  {t(locale, "settings.replace")}
-                </Button>
-                <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => void disconnect()} disabled={disconnecting} aria-busy={disconnecting}>
-                  {disconnecting ? t(locale, "settings.disconnecting") : t(locale, "settings.disconnect")}
-                </Button>
-              </div>
+              <span className="text-[11px] text-muted-foreground">
+                {t(locale, "settings.apiKeysDesc")}
+              </span>
             </div>
-          ) : (
-            <div className="space-y-2.5">
-              <div className="flex gap-2">
-                <input
-                  type="password"
-                  aria-label={t(locale, "settings.aiConnection")}
-                  placeholder="AIza…"
-                  value={apiKey}
-                  onChange={(event) => setApiKey(event.target.value)}
-                  className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                />
-                <Button type="button" size="sm" className="h-8 px-3 text-xs" onClick={() => void connect()} disabled={!apiKey.trim() || connecting} aria-busy={connecting}>
-                  {connecting
-                    ? t(locale, "settings.connecting")
-                    : connected
-                      ? t(locale, "settings.replace")
-                      : t(locale, "settings.connect")}
-                </Button>
-                {replaceMode ? (
-                  <Button type="button" size="sm" variant="ghost" className="h-8 px-2.5 text-xs" onClick={() => setReplaceMode(false)}>
-                    {t(locale, "overlay.cancel")}
-                  </Button>
-                ) : null}
-              </div>
-              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-                <span className="text-[11px]">{t(locale, "settings.apiKeySecurity")}</span>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  className="h-6 px-2 text-[11px]"
-                  onClick={() => void openApiKeyPage()}
-                >
-                  <ExternalLink className="size-3 shrink-0" aria-hidden="true" />
-                  {t(locale, "settings.getApiKey")}
-                </Button>
-              </div>
+          ) : null}
+          {connected ? (
+            <div className="space-y-1">
+              {apiKeys.map((slot, position) => {
+                const busy = busyKeyIndex === slot.index;
+                return (
+                  <div
+                    key={slot.index}
+                    className="flex items-center justify-between gap-2.5 rounded-md border border-border/80 bg-background/80 px-2 py-1 text-xs shadow-xs"
+                  >
+                    <div className="flex items-center gap-1.5 overflow-hidden">
+                      <span className="flex size-3.5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[10px] font-semibold text-primary">
+                        {position + 1}
+                      </span>
+                      <span className="truncate font-medium text-xs">
+                        {t(locale, "settings.keyName", { n: position + 1 })}
+                      </span>
+                      {slot.is_primary ? (
+                        <span className="shrink-0 rounded-full bg-primary/10 px-1.5 py-px text-[10px] font-semibold text-primary">
+                          {t(locale, "settings.primary")}
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      {!slot.is_primary ? (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          className="h-6 px-2 text-[11px]"
+                          disabled={busyKeyIndex !== null}
+                          onClick={() => void runKeyOp(slot.index, onSetPrimaryKey)}
+                        >
+                          {t(locale, "settings.makePrimary")}
+                        </Button>
+                      ) : null}
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => void runKeyOp(slot.index, onRemoveKey)}
+                        disabled={busyKeyIndex !== null}
+                        aria-busy={busy}
+                        className="h-6 w-6 p-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive shrink-0"
+                        title={t(locale, "settings.remove")}
+                      >
+                        <Trash2 className="size-3" />
+                        <span className="sr-only">{t(locale, "settings.remove")}</span>
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
-          )}
+          ) : null}
+          {keyOpError ? (
+            <InlineNotice tone="error">{t(locale, "settings.keyUpdateFailed")}</InlineNotice>
+          ) : null}
+          <div className="flex gap-2">
+            <input
+              type="password"
+              aria-label={t(locale, "settings.aiConnection")}
+              placeholder="AIza…"
+              value={apiKey}
+              onChange={(event) => setApiKey(event.target.value)}
+              className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            />
+            <Button type="button" size="sm" className="h-8 px-3 text-xs" onClick={() => void addKey()} disabled={!apiKey.trim() || connecting} aria-busy={connecting}>
+              {connecting
+                ? t(locale, "settings.addingKey")
+                : connected
+                  ? t(locale, "settings.addKey")
+                  : t(locale, "settings.connect")}
+            </Button>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+            <span className="text-[11px]">{t(locale, "settings.apiKeySecurity")}</span>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-6 px-2 text-[11px]"
+              onClick={() => void openApiKeyPage()}
+            >
+              <ExternalLink className="size-3 shrink-0" aria-hidden="true" />
+              {t(locale, "settings.getApiKey")}
+            </Button>
+          </div>
           {connectionError ? (
             <InlineNotice tone="error">{t(locale, "settings.connectionFailed")}</InlineNotice>
           ) : null}

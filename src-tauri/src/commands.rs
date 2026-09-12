@@ -13,7 +13,8 @@ use crate::recorder;
 use crate::session;
 use crate::settings::SettingsStore;
 use crate::types::{
-    AppSettings, AudioDeviceInfo, GeminiModelInfo, MicLevelPayload, PlatformInfo, PublicSettings,
+    ApiKeySlot, AppSettings, AudioDeviceInfo, GeminiModelInfo, MicLevelPayload, PlatformInfo,
+    PublicSettings,
 };
 
 // ---------- settings ----------
@@ -410,18 +411,28 @@ pub async fn check_update() -> AppResult<crate::types::UpdateInfo> {
     })
 }
 
-async fn validate_then_store_api_key<V, VFut, S>(key: &str, validate: V, store: S) -> AppResult<()>
+async fn validate_then_store_api_key<V, VFut, S>(key: &str, validate: V, store: S) -> AppResult<Vec<ApiKeySlot>>
 where
     V: FnOnce(String) -> VFut,
     VFut: std::future::Future<Output = AppResult<()>>,
-    S: FnOnce(&str) -> AppResult<()>,
+    S: FnOnce(&str) -> AppResult<Vec<String>>,
 {
     let trimmed = key.trim();
     if trimmed.is_empty() {
         return Err(AppError::MissingApiKey);
     }
     validate(trimmed.to_string()).await?;
-    store(trimmed)
+    Ok(slots_of(&store(trimmed)?))
+}
+
+fn slots_of(keys: &[String]) -> Vec<ApiKeySlot> {
+    keys.iter()
+        .enumerate()
+        .map(|(index, _)| ApiKeySlot {
+            index,
+            is_primary: index == 0,
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -429,18 +440,68 @@ pub async fn connect_api_key(
     store: State<'_, Arc<SettingsStore>>,
     gemini: State<'_, Arc<GeminiClient>>,
     key: String,
-) -> AppResult<()> {
+) -> AppResult<Vec<ApiKeySlot>> {
     validate_then_store_api_key(
         &key,
         |candidate| async move { gemini.list_models(&candidate).await.map(|_| ()) },
-        |candidate| store.set_api_key(candidate),
+        |candidate| store.connect_api_key(candidate),
     )
     .await
 }
 
 #[tauri::command]
-pub async fn delete_api_key(store: State<'_, Arc<SettingsStore>>) -> AppResult<()> {
-    store.delete_api_key()
+pub async fn add_api_key(
+    store: State<'_, Arc<SettingsStore>>,
+    gemini: State<'_, Arc<GeminiClient>>,
+    key: String,
+) -> AppResult<Vec<ApiKeySlot>> {
+    validate_then_store_api_key(
+        &key,
+        |candidate| async move { gemini.list_models(&candidate).await.map(|_| ()) },
+        |candidate| store.add_api_key(candidate),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn list_api_keys(
+    store: State<'_, Arc<SettingsStore>>,
+) -> AppResult<Vec<ApiKeySlot>> {
+    Ok(slots_of(&store.get_api_keys().unwrap_or_default()))
+}
+
+async fn mutate_key_at(
+    store: &SettingsStore,
+    index: usize,
+    update: impl FnOnce(&SettingsStore, usize) -> AppResult<Vec<String>>,
+) -> AppResult<Vec<ApiKeySlot>> {
+    let count = store.get_api_keys().unwrap_or_default().len();
+    if index >= count {
+        return Err(AppError::Other("unknown API key".into()));
+    }
+    Ok(slots_of(&update(store, index)?))
+}
+
+#[tauri::command]
+pub async fn remove_api_key(
+    store: State<'_, Arc<SettingsStore>>,
+    index: usize,
+) -> AppResult<Vec<ApiKeySlot>> {
+    mutate_key_at(store.inner().as_ref(), index, |store, index| {
+        store.remove_api_key(index)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn set_primary_api_key(
+    store: State<'_, Arc<SettingsStore>>,
+    index: usize,
+) -> AppResult<Vec<ApiKeySlot>> {
+    mutate_key_at(store.inner().as_ref(), index, |store, index| {
+        store.set_primary_api_key(index)
+    })
+    .await
 }
 
 // ---------- models ----------
@@ -450,7 +511,11 @@ pub async fn list_models(
     store: State<'_, Arc<SettingsStore>>,
     gemini: State<'_, Arc<GeminiClient>>,
 ) -> AppResult<Vec<GeminiModelInfo>> {
-    let key = store.get_api_key()?;
+    let keys = store.get_api_keys()?;
+    let key = keys
+        .first()
+        .ok_or(AppError::MissingApiKey)?
+        .clone();
     gemini.list_models(&key).await
 }
 
@@ -720,7 +785,7 @@ mod tests {
                     .lock()
                     .unwrap()
                     .push(candidate.to_string());
-                Ok(())
+                Ok(vec![candidate.to_string()])
             },
         )
         .await;
@@ -734,7 +799,7 @@ mod tests {
         let persisted = Arc::new(Mutex::new(Vec::<String>::new()));
         let persisted_for_store = persisted.clone();
 
-        validate_then_store_api_key(
+        let slots = validate_then_store_api_key(
             "  valid-key  ",
             |candidate| async move {
                 assert_eq!(candidate, "valid-key");
@@ -745,12 +810,24 @@ mod tests {
                     .lock()
                     .unwrap()
                     .push(candidate.to_string());
-                Ok(())
+                Ok(vec![candidate.to_string()])
             },
         )
         .await
         .unwrap();
 
         assert_eq!(persisted.lock().unwrap().as_slice(), &["valid-key"]);
+        assert_eq!(slots.len(), 1);
+        assert!(slots[0].is_primary);
+    }
+
+    #[test]
+    fn key_slots_mark_only_the_first_key_primary() {
+        let slots = slots_of(&["a".to_string(), "b".to_string()]);
+
+        assert_eq!(slots.len(), 2);
+        assert!(slots[0].is_primary);
+        assert!(!slots[1].is_primary);
+        assert!(slots_of(&[]).is_empty());
     }
 }

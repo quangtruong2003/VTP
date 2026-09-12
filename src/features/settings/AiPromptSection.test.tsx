@@ -45,8 +45,10 @@ function props(overrides: Partial<React.ComponentProps<typeof AiPromptSection>> 
     locale: "en" as const,
     models,
     modelsLoading: false,
-    onConnect: vi.fn(async () => {}),
-    onDisconnect: vi.fn(async () => {}),
+    apiKeys: [{ index: 0, is_primary: true }],
+    onAddKey: vi.fn(async () => {}),
+    onRemoveKey: vi.fn(async () => {}),
+    onSetPrimaryKey: vi.fn(async () => {}),
     onLoadModels: vi.fn(async () => {}),
     onUpdateImmediate: vi.fn(),
     onUpdateDebounced: vi.fn(),
@@ -55,12 +57,14 @@ function props(overrides: Partial<React.ComponentProps<typeof AiPromptSection>> 
 }
 
 describe("AiPromptSection", () => {
-  it("hides the password input after connection and loads models", async () => {
+  it("shows the key list with an add row and loads models", async () => {
     const onLoadModels = vi.fn(async () => {});
     render(<AiPromptSection {...props({ onLoadModels })} />);
 
-    expect(screen.queryByPlaceholderText(/AIza/)).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/AIza/)).toBeInTheDocument();
     expect(screen.getByText("Connected")).toBeInTheDocument();
+    expect(screen.getByText("Key 1")).toBeInTheDocument();
+    expect(screen.getByText("Primary")).toBeInTheDocument();
     await waitFor(() => expect(onLoadModels).toHaveBeenCalledTimes(1));
   });
 
@@ -76,15 +80,16 @@ describe("AiPromptSection", () => {
     expect(screen.queryByLabelText(/max output tokens/i)).not.toBeInTheDocument();
   });
 
-  it("connects a candidate key explicitly instead of autosaving it", async () => {
-    const onConnect = vi.fn(async () => {});
+  it("adds a candidate key explicitly instead of autosaving it", async () => {
+    const onAddKey = vi.fn(async () => {});
     const onUpdateDebounced = vi.fn();
     render(
       <AiPromptSection
         {...props({
           settings: { ...base, api_key_set: false },
           models: [],
-          onConnect,
+          apiKeys: [],
+          onAddKey,
           onUpdateDebounced,
         })}
       />,
@@ -93,56 +98,88 @@ describe("AiPromptSection", () => {
     await userEvent.type(screen.getByPlaceholderText(/AIza/), "AIza-test-key");
     await userEvent.click(screen.getByRole("button", { name: "Connect" }));
 
-    expect(onConnect).toHaveBeenCalledWith("AIza-test-key");
+    expect(onAddKey).toHaveBeenCalledWith("AIza-test-key");
     expect(onUpdateDebounced).not.toHaveBeenCalledWith(
       expect.objectContaining({ api_key: expect.anything() }),
     );
   });
 
-  it("prevents duplicate key connections while the request is pending", async () => {
-    let resolveConnect!: () => void;
-    const onConnect = vi.fn(() => new Promise<void>((resolve) => {
-      resolveConnect = resolve;
+  it("prevents duplicate key adds while the request is pending", async () => {
+    let resolveAdd!: () => void;
+    const onAddKey = vi.fn(() => new Promise<void>((resolve) => {
+      resolveAdd = resolve;
     }));
     render(
       <AiPromptSection
         {...props({
           settings: { ...base, api_key_set: false },
           models: [],
-          onConnect,
+          apiKeys: [],
+          onAddKey,
         })}
       />,
     );
 
     await userEvent.type(screen.getByPlaceholderText(/AIza/), "AIza-test-key");
-    const connectButton = screen.getByRole("button", { name: "Connect" });
-    await userEvent.click(connectButton);
+    const addButton = screen.getByRole("button", { name: "Connect" });
+    await userEvent.click(addButton);
+    await userEvent.click(addButton);
 
-    expect(onConnect).toHaveBeenCalledTimes(1);
-    expect(connectButton).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Connecting…" })).toHaveAttribute("aria-busy", "true");
+    expect(onAddKey).toHaveBeenCalledTimes(1);
+    expect(addButton).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Adding…" })).toHaveAttribute("aria-busy", "true");
 
-    resolveConnect();
-    await waitFor(() => expect(screen.getByText("Connected")).toBeInTheDocument());
+    resolveAdd();
+    await waitFor(() => expect(screen.getByPlaceholderText(/AIza/)).toHaveValue(""));
+    expect(onAddKey).toHaveBeenCalledTimes(1);
   });
 
-  it("prevents duplicate disconnect requests while the request is pending", async () => {
-    let resolveDisconnect!: () => void;
-    const onDisconnect = vi.fn(() => new Promise<void>((resolve) => {
-      resolveDisconnect = resolve;
+  it("removes a key once even when clicked repeatedly", async () => {
+    let resolveRemove!: () => void;
+    const onRemoveKey = vi.fn(() => new Promise<void>((resolve) => {
+      resolveRemove = resolve;
     }));
-    render(<AiPromptSection {...props({ onDisconnect })} />);
+    render(
+      <AiPromptSection
+        {...props({
+          apiKeys: [
+            { index: 0, is_primary: true },
+            { index: 1, is_primary: false },
+          ],
+          onRemoveKey,
+        })}
+      />,
+    );
 
-    const disconnectButton = screen.getByRole("button", { name: "Disconnect" });
-    await userEvent.click(disconnectButton);
-    await userEvent.click(disconnectButton);
+    const removeButtons = screen.getAllByRole("button", { name: "Remove" });
+    expect(removeButtons).toHaveLength(2);
+    await userEvent.click(removeButtons[1]);
+    await userEvent.click(removeButtons[1]);
 
-    expect(onDisconnect).toHaveBeenCalledTimes(1);
-    expect(disconnectButton).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Disconnecting…" })).toHaveAttribute("aria-busy", "true");
+    expect(onRemoveKey).toHaveBeenCalledTimes(1);
+    expect(onRemoveKey).toHaveBeenCalledWith(1);
 
-    resolveDisconnect();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Connect" })).toBeInTheDocument());
+    resolveRemove();
+    await waitFor(() => expect(removeButtons[1]).not.toBeDisabled());
+  });
+
+  it("promotes a fallback key to primary", async () => {
+    const onSetPrimaryKey = vi.fn(async () => {});
+    render(
+      <AiPromptSection
+        {...props({
+          apiKeys: [
+            { index: 0, is_primary: true },
+            { index: 1, is_primary: false },
+          ],
+          onSetPrimaryKey,
+        })}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Make primary" }));
+
+    expect(onSetPrimaryKey).toHaveBeenCalledWith(1);
   });
 
   it("debounces system prompt edits while model/language selections commit immediately", async () => {

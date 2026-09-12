@@ -137,7 +137,7 @@ VoiceToPromptV2/
 | Crate | Why |
 |---|---|
 | `tauri 2` + plugins `global-shortcut`, `clipboard-manager`, `single-instance`, `opener` | Official, maintained, capability-gated (ACL per window). Avoids custom native code for the riskiest integrations. |
-| `keyring 3` (windows-native) | API key in **Windows Credential Manager** / macOS Keychain. Never on disk. `windows-native` feature avoids the pure-Rust fallback writing plaintext. |
+| `keyring 3` (windows-native) | Ordered API key list (JSON) in **Windows Credential Manager** / macOS Keychain. Never on disk. `windows-native` feature avoids the pure-Rust fallback writing plaintext. |
 | `cpal 0.15` | Cross-platform audio capture (WASAPI/CoreAudio) with callback-based, low-latency input. Stream owned by a dedicated thread (WASAPI streams aren't `Sync`). |
 | `crossbeam-queue` | Lock-free bounded SPSC queue for the RT audio callback (no locks/alloc on the audio thread). |
 | `reqwest 0.12` (rustls-tls, no default features) | Async HTTP with TLS without OpenSSL; single client reused across calls (connection pooling = fewer handshakes). |
@@ -158,8 +158,10 @@ VoiceToPromptV2/
 
 Security properties:
 
-- **Key isolation**: the key lives only in the OS keyring; the webview only
-  ever receives `api_key_set: boolean`. The key is used exclusively inside
+- **Key isolation**: the keys live only in the OS keyring as an ordered list
+  (first is primary); the webview only
+  ever receives `api_key_set: boolean` plus key slots (index + primary flag,
+  never key material). A key is used exclusively inside
   the Rust process, attached as the `x-goog-api-key` header (not a query
   parameter that could leak into logs).
 - **CSP + capabilities**: `capabilities/default.json` targets all three
@@ -183,7 +185,7 @@ Rust owns all state; the webview is a projection.
 | State | Home | Visibility |
 |---|---|---|
 | Settings | `SettingsStore` (Mutex in managed state) | pushed via `settings://saved` after save |
-| API key | OS keyring | `api_key_set: boolean` only |
+| API keys | OS keyring | `api_key_set: boolean` + key slots only |
 | Session | `SessionManager.active: AsyncMutex<Option<Session>>` | drives `overlay://state` events |
 | Recording level/elapsed | capture thread atomics | pushed in `overlay://state` every 100 ms (10 Hz) |
 | History | JSONL file | `history_list` command + `history://changed` event |

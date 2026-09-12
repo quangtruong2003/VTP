@@ -12,7 +12,7 @@ import { HistorySection } from "@/features/settings/HistorySection";
 import { Onboarding } from "@/features/settings/Onboarding";
 import { overlayApi } from "@/lib/overlay";
 import { onSettingsSection, settingsApi } from "@/lib/settings";
-import type { GeminiModelInfo } from "@/lib/types";
+import type { ApiKeySlot, GeminiModelInfo } from "@/lib/types";
 
 function isSettingsSection(value: string): value is SettingsSection {
   return ["general", "voice", "ai_prompt", "shortcut", "output", "history"].includes(value);
@@ -72,6 +72,7 @@ export function SettingsApp() {
   const modelsLoadingRef = useRef(false);
   const modelsLoadedRef = useRef(false);
   const [onboardingActive, setOnboardingActive] = useState(false);
+  const [apiKeys, setApiKeys] = useState<ApiKeySlot[]>([]);
   const toggleOverlay = useCallback(() => {
     void Promise.resolve(overlayApi.toggle()).catch(() => {
       // The settings surface stays usable if the overlay cannot be opened.
@@ -104,22 +105,10 @@ export function SettingsApp() {
     }
   }, []);
 
-  const connectApiKey = useCallback(
-    async (key: string) => {
-      await settingsApi.connectApiKey(key);
-      modelsRequestRef.current += 1;
-      modelsLoadingRef.current = false;
-      modelsLoadedRef.current = false;
-      setModels([]);
-      setModelsLoading(false);
-      await refreshPublicSettings();
-    },
-    [refreshPublicSettings],
-  );
   const connectApiKeyForOnboarding = useCallback(
     async (key: string) => {
       setOnboardingActive(true);
-      await settingsApi.connectApiKey(key);
+      setApiKeys(await settingsApi.connectApiKey(key));
       modelsRequestRef.current += 1;
       modelsLoadingRef.current = false;
       modelsLoadedRef.current = false;
@@ -130,19 +119,49 @@ export function SettingsApp() {
     [refreshPublicSettings],
   );
 
-  const disconnectApiKey = useCallback(async () => {
+  const reloadModelsAfterKeyChange = useCallback(() => {
     modelsRequestRef.current += 1;
     modelsLoadingRef.current = false;
-    setModelsLoading(false);
-    await settingsApi.deleteApiKey();
     modelsLoadedRef.current = false;
     setModels([]);
-    await refreshPublicSettings();
-  }, [refreshPublicSettings]);
+    setModelsLoading(false);
+    void loadModels();
+  }, [loadModels]);
+
+  const addApiKey = useCallback(
+    async (key: string) => {
+      setApiKeys(await settingsApi.addApiKey(key));
+      reloadModelsAfterKeyChange();
+    },
+    [reloadModelsAfterKeyChange],
+  );
+  const removeApiKey = useCallback(
+    async (index: number) => {
+      setApiKeys(await settingsApi.removeApiKey(index));
+      await refreshPublicSettings();
+      reloadModelsAfterKeyChange();
+    },
+    [refreshPublicSettings, reloadModelsAfterKeyChange],
+  );
+  const setPrimaryApiKey = useCallback(
+    async (index: number) => {
+      setApiKeys(await settingsApi.setPrimaryApiKey(index));
+      reloadModelsAfterKeyChange();
+    },
+    [reloadModelsAfterKeyChange],
+  );
 
   useEffect(() => {
     let disposed = false;
     let unlistenSection: (() => void) | undefined;
+    void settingsApi
+      .listApiKeys()
+      .then((keys) => {
+        if (!disposed) setApiKeys(keys);
+      })
+      .catch(() => {
+        // The key list stays empty when the lookup is unavailable.
+      });
     void onSettingsSection((target) => {
       if (!disposed && isSettingsSection(target)) setSection(target);
     })
@@ -254,8 +273,10 @@ export function SettingsApp() {
             models={models}
             modelsLoading={modelsLoading}
             modelsError={modelsError}
-            onConnect={connectApiKey}
-            onDisconnect={disconnectApiKey}
+            apiKeys={apiKeys}
+            onAddKey={addApiKey}
+            onRemoveKey={removeApiKey}
+            onSetPrimaryKey={setPrimaryApiKey}
             onLoadModels={loadModels}
             onUpdateImmediate={store.updateImmediate}
             onUpdateDebounced={store.updateDebounced}

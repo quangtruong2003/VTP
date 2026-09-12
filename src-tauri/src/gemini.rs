@@ -115,8 +115,10 @@ impl GeminiClient {
 
     /// POST generateContent with inline base64 FLAC audio. The API key is
     /// sent via the `x-goog-api-key` header (not a query param, which could
-    /// leak into logs). If the primary model encounters an error, it tries
-    /// configured fallback models in sequence.
+    /// leak into logs). Keys are tried first: every configured key is
+    /// attempted on the primary model before falling back to the next model.
+    /// A rejected key is dropped for the rest of the turn (and pruned from
+    /// storage); a model-scoped failure moves to the next model immediately.
     pub async fn transcribe_and_respond<C>(
         &self,
         settings: &SettingsStore,
@@ -129,7 +131,10 @@ impl GeminiClient {
         C: Fn() -> bool + Copy + Send + Sync,
     {
         let key_lookup_started = std::time::Instant::now();
-        let api_key = settings.get_api_key()?;
+        let mut keys = settings.get_api_keys()?;
+        if keys.is_empty() {
+            return Err(AppError::MissingApiKey);
+        }
         let key_lookup_ms = key_lookup_started.elapsed().as_millis();
         let models = settings_snapshot.model_chain();
         let base64_started = std::time::Instant::now();
@@ -137,43 +142,73 @@ impl GeminiClient {
         let base64_ms = base64_started.elapsed().as_millis();
         let primary_model = models.first().map(String::as_str).unwrap_or("<none>");
         log::debug!(
-            "gemini latency: model={} key_lookup_ms={} base64_ms={} audio_bytes={} base64_bytes={}",
+            "gemini latency: model={} keys={} key_lookup_ms={} base64_ms={} audio_bytes={} base64_bytes={}",
             primary_model,
+            keys.len(),
             key_lookup_ms,
             base64_ms,
             audio.len(),
             audio_b64.len()
         );
 
+        let total_attempts = models.len() * keys.len();
+        let mut attempt = 0;
+        let mut dead_keys: Vec<String> = Vec::new();
         let mut last_error = AppError::BadResponse;
-        for (index, model_name) in models.iter().enumerate() {
+        for (model_index, model_name) in models.iter().enumerate() {
             if is_cancelled() {
                 return Err(AppError::Cancelled);
             }
-            on_attempt(index + 1, models.len(), model_name);
-            let result = tokio::select! {
-                _ = wait_for_cancellation(is_cancelled) => Err(AppError::Cancelled),
-                result = self.generate_with_model(&api_key, model_name, &audio_b64, settings_snapshot) => result,
-            };
-            match result {
-                Ok(mut result) => {
-                    result.model = model_name.clone();
-                    if index > 0 {
-                        log::info!(
-                            "Fallback model '{model_name}' succeeded on attempt {}",
-                            index + 1
-                        );
-                    }
-                    return Ok(result);
+            let mut key_index = 0;
+            while key_index < keys.len() {
+                if is_cancelled() {
+                    return Err(AppError::Cancelled);
                 }
-                Err(err) => {
-                    log::warn!(
-                        "Model '{model_name}' failed: {err}. Attempting next model if available."
-                    );
-                    last_error = err;
+                attempt += 1;
+                on_attempt(attempt, total_attempts, model_name);
+                let result = tokio::select! {
+                    _ = wait_for_cancellation(is_cancelled) => Err(AppError::Cancelled),
+                    result = self.generate_with_model(&keys[key_index], model_name, &audio_b64, settings_snapshot) => result,
+                };
+                match result {
+                    Ok(mut result) => {
+                        result.model = model_name.clone();
+                        if model_index > 0 {
+                            log::info!(
+                                "Fallback model '{model_name}' succeeded on attempt {}",
+                                model_index + 1
+                            );
+                        }
+                        prune_dead_keys(settings, &dead_keys);
+                        return Ok(result);
+                    }
+                    Err(error) if is_dead_key_error(&error) => {
+                        log::warn!(
+                            "API key #{} rejected ({error}); dropping it for this turn",
+                            key_index + 1
+                        );
+                        dead_keys.push(keys.remove(key_index));
+                        last_error = error;
+                    }
+                    Err(error) if is_model_scoped_error(&error) => {
+                        log::warn!(
+                            "Model '{model_name}' failed: {error}. Attempting next model if available."
+                        );
+                        last_error = error;
+                        break;
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            "Model '{model_name}' failed with key #{}: {error}. Trying next key if available.",
+                            key_index + 1
+                        );
+                        last_error = error;
+                        key_index += 1;
+                    }
                 }
             }
         }
+        prune_dead_keys(settings, &dead_keys);
         Err(last_error)
     }
 
@@ -354,6 +389,39 @@ fn build_request_body(
     body
 }
 
+/// A 401 (or a 400 complaining about the key itself) means the key is
+/// dead: no other model will accept it either.
+fn is_dead_key_error(error: &AppError) -> bool {
+    match error {
+        AppError::Api { status: 401, .. } => true,
+        AppError::Api { status: 400, message } => {
+            message.to_ascii_lowercase().contains("api key")
+        }
+        _ => false,
+    }
+}
+
+/// Malformed-model and server-side failures are model-scoped: switching keys
+/// cannot fix them, so the turn moves to the next model immediately.
+fn is_model_scoped_error(error: &AppError) -> bool {
+    matches!(
+        error,
+        AppError::Api {
+            status: 400 | 404 | 500 | 502 | 503 | 504,
+            ..
+        }
+    )
+}
+
+fn prune_dead_keys(settings: &SettingsStore, dead_keys: &[String]) {
+    if dead_keys.is_empty() {
+        return;
+    }
+    if let Err(error) = settings.prune_api_keys(dead_keys) {
+        log::warn!("failed to prune rejected API keys: {error}");
+    }
+}
+
 fn selected_prompt(settings: &crate::types::AppSettings) -> String {
     let profile_prompt = settings
         .prompt_profiles
@@ -496,6 +564,42 @@ mod tests {
             selected_prompt(&settings),
             "Turn the transcript into a concise, polished email message.\n\nUse a warm, professional tone."
         );
+    }
+
+    #[test]
+    fn dead_key_and_model_errors_route_to_key_or_model_fallback() {
+        assert!(is_dead_key_error(&AppError::Api {
+            status: 401,
+            message: "invalid".into()
+        }));
+        assert!(is_dead_key_error(&AppError::Api {
+            status: 400,
+            message: "API key not valid. Pass a valid key.".into()
+        }));
+        assert!(!is_dead_key_error(&AppError::Api {
+            status: 400,
+            message: "thinking config unsupported".into()
+        }));
+        assert!(!is_dead_key_error(&AppError::Api {
+            status: 429,
+            message: "quota".into()
+        }));
+
+        assert!(is_model_scoped_error(&AppError::Api {
+            status: 404,
+            message: "not found".into()
+        }));
+        assert!(is_model_scoped_error(&AppError::Api {
+            status: 503,
+            message: "overloaded".into()
+        }));
+        assert!(!is_model_scoped_error(&AppError::Api {
+            status: 429,
+            message: "quota".into()
+        }));
+        assert!(!is_model_scoped_error(&AppError::Network(
+            "down".into()
+        )));
     }
 
     #[test]

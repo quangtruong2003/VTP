@@ -7,7 +7,10 @@ const mocks = vi.hoisted(() => ({
   useSettingsStore: vi.fn(),
   get: vi.fn(),
   connectApiKey: vi.fn(),
-  deleteApiKey: vi.fn(),
+  addApiKey: vi.fn(),
+  listApiKeys: vi.fn(),
+  removeApiKey: vi.fn(),
+  setPrimaryApiKey: vi.fn(),
   listModels: vi.fn(),
   setShortcut: vi.fn(),
   setProcessShortcut: vi.fn(),
@@ -32,7 +35,10 @@ vi.mock("@/lib/settings", () => ({
   settingsApi: {
     get: mocks.get,
     connectApiKey: mocks.connectApiKey,
-    deleteApiKey: mocks.deleteApiKey,
+    addApiKey: mocks.addApiKey,
+    listApiKeys: mocks.listApiKeys,
+    removeApiKey: mocks.removeApiKey,
+    setPrimaryApiKey: mocks.setPrimaryApiKey,
     listModels: mocks.listModels,
     setShortcut: mocks.setShortcut,
     setProcessShortcut: mocks.setProcessShortcut,
@@ -122,7 +128,8 @@ describe("SettingsApp Task 12 production integration", () => {
       release_url: "https://github.com/quangtruong2003/VTP/releases",
     });
     mocks.get.mockResolvedValue({ ...baseSettings } satisfies PublicSettings);
-    mocks.connectApiKey.mockResolvedValue(undefined);
+    mocks.connectApiKey.mockResolvedValue([]);
+    mocks.listApiKeys.mockResolvedValue([]);
     mocks.listModels.mockResolvedValue([]);
     mocks.setShortcut.mockImplementation(async (shortcut: string) => ({
       ...baseSettings,

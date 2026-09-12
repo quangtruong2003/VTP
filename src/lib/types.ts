@@ -76,6 +76,11 @@ export interface PlatformInfo {
   primary_modifier: string;
 }
 
+export interface ApiKeySlot {
+  index: number;
+  is_primary: boolean;
+}
+
 export interface UpdateInfo {
   current_version: string;
   latest_version: string;

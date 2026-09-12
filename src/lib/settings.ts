@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
+  ApiKeySlot,
   AppSettings,
   AudioDeviceInfo,
   GeminiModelInfo,
@@ -29,8 +30,12 @@ export const settingsApi = {
   platformInfo: () => invoke<PlatformInfo>("platform_info"),
   appVersion: () => invoke<string>("app_version"),
   checkUpdate: () => invoke<UpdateInfo>("check_update"),
-  connectApiKey: (key: string) => invoke<void>("connect_api_key", { key }),
-  deleteApiKey: () => invoke<void>("delete_api_key"),
+  connectApiKey: (key: string) => invoke<ApiKeySlot[]>("connect_api_key", { key }),
+  addApiKey: (key: string) => invoke<ApiKeySlot[]>("add_api_key", { key }),
+  listApiKeys: () => invoke<ApiKeySlot[]>("list_api_keys"),
+  removeApiKey: (index: number) => invoke<ApiKeySlot[]>("remove_api_key", { index }),
+  setPrimaryApiKey: (index: number) =>
+    invoke<ApiKeySlot[]>("set_primary_api_key", { index }),
   listModels: () => invoke<GeminiModelInfo[]>("list_models"),
   listAudioDevices: () => invoke<AudioDeviceInfo[]>("list_audio_devices"),
   micTestStart: (deviceName: string | null) =>
