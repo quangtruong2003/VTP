@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { InlineNotice } from "@/components/inline-notice";
 import { SectionCard } from "@/components/section-card";
-import { StatusBadge } from "@/components/status-badge";
-import { VoiceMeter } from "@/features/overlay/VoiceMeter";
 import { t, type UiLocale } from "@/lib/i18n";
 import type { AppSettings, AudioDeviceInfo } from "@/lib/types";
+import { MicLevelIndicator } from "./MicLevelIndicator";
 
 export function VoiceSection({
   settings,
@@ -19,7 +19,7 @@ export function VoiceSection({
 }: {
   settings: AppSettings;
   devices: AudioDeviceInfo[];
-  micLevel: number;
+  micLevel?: number;
   locale: UiLocale;
   onUpdateImmediate: (patch: Partial<AppSettings>) => void;
   onRefreshDevices: () => Promise<AudioDeviceInfo[]>;
@@ -27,6 +27,10 @@ export function VoiceSection({
   onMicTestStop: () => Promise<void>;
 }) {
   const [testing, setTesting] = useState(false);
+  const [testBusy, setTestBusy] = useState(false);
+  const [testError, setTestError] = useState(false);
+  const [refreshingDevices, setRefreshingDevices] = useState(false);
+  const [deviceRefreshError, setDeviceRefreshError] = useState(false);
   const ownsTest = useRef(false);
   const defaultDevice = devices.find((device) => device.is_default);
 
@@ -34,22 +38,44 @@ export function VoiceSection({
     () => () => {
       if (ownsTest.current) {
         ownsTest.current = false;
-        void onMicTestStop();
+        void onMicTestStop().catch(() => {});
       }
     },
     [onMicTestStop],
   );
 
-  const startTest = async () => {
-    await onMicTestStart(settings.device_name);
-    ownsTest.current = true;
-    setTesting(true);
+  const toggleTest = async () => {
+    if (testBusy) return;
+    setTestError(false);
+    setTestBusy(true);
+    try {
+      if (testing) {
+        await onMicTestStop();
+        ownsTest.current = false;
+        setTesting(false);
+      } else {
+        await onMicTestStart(settings.device_name);
+        ownsTest.current = true;
+        setTesting(true);
+      }
+    } catch {
+      setTestError(true);
+    } finally {
+      setTestBusy(false);
+    }
   };
 
-  const stopTest = async () => {
-    ownsTest.current = false;
-    await onMicTestStop();
-    setTesting(false);
+  const refreshDevices = async () => {
+    if (refreshingDevices) return;
+    setDeviceRefreshError(false);
+    setRefreshingDevices(true);
+    try {
+      await onRefreshDevices();
+    } catch {
+      setDeviceRefreshError(true);
+    } finally {
+      setRefreshingDevices(false);
+    }
   };
 
   return (
@@ -92,7 +118,9 @@ export function VoiceSection({
               size="sm"
               variant="ghost"
               className="h-7 px-2 text-xs"
-              onClick={() => void onRefreshDevices()}
+              onClick={() => void refreshDevices()}
+              disabled={refreshingDevices}
+              aria-busy={refreshingDevices}
             >
               <RefreshCw className="size-3 shrink-0" aria-hidden="true" />
               {t(locale, "settings.refreshDevices")}
@@ -101,24 +129,16 @@ export function VoiceSection({
 
           <div className="rounded-lg border border-border bg-secondary/30 px-3 py-2.5">
             <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0 flex-1">
-                <div className="scale-[0.80] origin-left">
-                  <VoiceMeter level={micLevel} locale={locale} />
-                </div>
-                <StatusBadge tone={micLevel > 12 ? "success" : "neutral"}>
-                  {t(
-                    locale,
-                    micLevel > 12 ? "settings.receivingAudio" : "settings.noAudioYet",
-                  )}
-                </StatusBadge>
-              </div>
-              <Button
-                type="button"
-                size="sm"
-                className="h-7 px-2.5 text-xs"
-                variant={testing ? "secondary" : "outline"}
-                onClick={() => void (testing ? stopTest() : startTest())}
-              >
+              <MicLevelIndicator locale={locale} compact initialLevel={micLevel} />
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-7 px-2.5 text-xs"
+                  variant={testing ? "secondary" : "outline"}
+                  onClick={() => void toggleTest()}
+                  disabled={testBusy}
+                  aria-busy={testBusy}
+                >
                 {t(
                   locale,
                   testing ? "settings.stopMicrophoneTest" : "settings.testMicrophone",
@@ -126,6 +146,12 @@ export function VoiceSection({
               </Button>
             </div>
           </div>
+          {deviceRefreshError ? (
+            <InlineNotice tone="error">{t(locale, "settings.refreshDevicesFailed")}</InlineNotice>
+          ) : null}
+          {testError ? (
+            <InlineNotice tone="error">{t(locale, "settings.micTestFailed")}</InlineNotice>
+          ) : null}
         </div>
       </SectionCard>
 

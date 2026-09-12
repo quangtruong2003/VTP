@@ -15,8 +15,30 @@ describe("overlay reducer", () => {
       text: "old",
       pasted: true,
       copied: true,
+      output: "inserted",
     });
     expect(stale).toEqual(current);
+  });
+
+  it("accepts live updates within the current session", () => {
+    const recording = reduceOverlayEvent(initialOverlayModel, {
+      session_id: 9,
+      phase: "recording",
+      elapsed_ms: 250,
+      level: 20,
+    });
+    const updated = reduceOverlayEvent(recording, {
+      session_id: 9,
+      phase: "recording",
+      elapsed_ms: 500,
+      level: 180,
+    });
+
+    expect(updated.state).toEqual({
+      phase: "recording",
+      elapsed_ms: 500,
+      level: 180,
+    });
   });
 
   it("auto dismisses only inserted success", () => {
@@ -26,6 +48,7 @@ describe("overlay reducer", () => {
       text: "ok",
       pasted: true,
       copied: true,
+      output: "inserted",
     });
     const copiedOnly = reduceOverlayEvent(initialOverlayModel, {
       session_id: 2,
@@ -33,6 +56,7 @@ describe("overlay reducer", () => {
       text: "ok",
       pasted: false,
       copied: true,
+      output: "copied",
     });
     expect(inserted.autoDismissEligible).toBe(true);
     expect(copiedOnly.autoDismissEligible).toBe(false);
@@ -63,6 +87,7 @@ describe("overlay reducer", () => {
       text: "late",
       pasted: true,
       copied: true,
+      output: "inserted",
     });
     expect(exiting.lifecycle).toBe("exiting");
     expect(lateSuccess).toEqual(exiting);
@@ -87,5 +112,22 @@ describe("overlay reducer", () => {
     });
     expect(next.sessionId).toBe(10);
     expect(next.lifecycle).toBe("visible");
+  });
+
+  it("keeps a newer live event when an older snapshot arrives later", () => {
+    const live = reduceOverlayEvent(initialOverlayModel, {
+      session_id: 8,
+      phase: "recording",
+      elapsed_ms: 100,
+      level: 20,
+      health: "healthy",
+      warning: null,
+    });
+    const snapshot = reduceOverlayEvent(live, {
+      session_id: 7,
+      phase: "opening",
+      device_name: null,
+    });
+    expect(snapshot).toEqual(live);
   });
 });

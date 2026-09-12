@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { resolveUiLocale, t, type UiLocale } from "@/lib/i18n";
-import { settingsApi } from "@/lib/settings";
-import type { FrontendError } from "@/lib/types";
+import { onSettingsSaved, settingsApi } from "@/lib/settings";
 import { ErrorState } from "@/features/overlay/ErrorState";
 import { OverlayShell } from "@/features/overlay/OverlayShell";
 import { ProcessingState } from "@/features/overlay/ProcessingState";
@@ -10,7 +9,7 @@ import { SuccessState } from "@/features/overlay/SuccessState";
 import { useOverlaySession } from "@/features/overlay/useOverlaySession";
 
 const DEFAULT_SHORTCUT = "CmdOrCtrl+Shift+Space";
-const DEFAULT_PROCESS_SHORTCUT = "Enter";
+const DEFAULT_PROCESS_SHORTCUT = "";
 const DEFAULT_CANCEL_SHORTCUT = "Escape";
 
 export function IdleState(_props: { locale: UiLocale; onStart: () => void }) {
@@ -24,11 +23,15 @@ export function OverlayApp() {
     togglePause,
     processRecording,
     cancel,
-    retry,
+    reprocessAudio,
+    retryInsertion,
+    copyLastResult,
+    startNewRecording,
     hide,
     completeExit,
     openSettings,
     copyText,
+    insertResult,
   } = useOverlaySession();
   const [shortcut, setShortcut] = useState(DEFAULT_SHORTCUT);
   const [processShortcut, setProcessShortcut] = useState(DEFAULT_PROCESS_SHORTCUT);
@@ -39,23 +42,36 @@ export function OverlayApp() {
 
   useEffect(() => {
     let active = true;
-    void settingsApi.get().then((settings) => {
+    const applySettings = (settings: Awaited<ReturnType<typeof settingsApi.get>>) => {
       if (!active) return;
       setShortcut(settings.shortcut || DEFAULT_SHORTCUT);
-      setProcessShortcut(settings.process_shortcut || DEFAULT_PROCESS_SHORTCUT);
+      setProcessShortcut(settings.process_shortcut);
       setCancelShortcut(settings.cancel_shortcut || DEFAULT_CANCEL_SHORTCUT);
       setLocale(resolveUiLocale(settings.ui_locale, navigator.language));
-    }).catch(() => {});
+    };
+
+    void settingsApi.get().then(applySettings).catch(() => {});
+    const unlistenSaved = onSettingsSaved(applySettings).catch(() => () => {});
+
     return () => {
       active = false;
+      void unlistenSaved.then((unlisten) => unlisten());
     };
-  }, [model.sessionId]);
+  }, []);
 
   const state = model.state;
   let content;
   switch (state.phase) {
     case "idle":
       content = <IdleState locale={locale} onStart={() => void startRecording()} />;
+      break;
+    case "opening":
+      content = (
+        <div role="status" aria-live="polite" className="flex h-full items-center gap-2.5 px-3.5 text-xs text-zinc-100">
+          <span aria-hidden="true" className="size-2 rounded-full bg-amber-300" />
+          {t(locale, "overlay.openingMicrophone")}
+        </div>
+      );
       break;
     case "recording":
       content = (
@@ -66,6 +82,8 @@ export function OverlayApp() {
           processShortcut={processShortcut}
           cancelShortcut={cancelShortcut}
           paused={false}
+          health={state.health ?? "healthy"}
+          warning={state.warning ?? null}
           locale={locale}
           onTogglePause={() => void togglePause()}
           onProcess={() => void processRecording()}
@@ -82,6 +100,8 @@ export function OverlayApp() {
           processShortcut={processShortcut}
           cancelShortcut={cancelShortcut}
           paused
+          health="healthy"
+          warning={null}
           locale={locale}
           onTogglePause={() => void togglePause()}
           onProcess={() => void processRecording()}
@@ -97,50 +117,48 @@ export function OverlayApp() {
           elapsedMs={model.processingElapsedMs}
           showHint={model.showLongProcessingHint}
           showCancel={model.showCancel}
+          status={state.phase === "processing" ? state.status : "encoding"}
+          model={state.phase === "processing" ? state.model : null}
           onCancel={() => void cancel()}
         />
       );
       break;
     case "success":
-      if (!state.pasted && !state.copied) {
-        const error: FrontendError = { code: "insertion_failed", recoverable: true };
-        content = (
-          <ErrorState
-            error={error}
-            locale={locale}
-            onRetry={() => void retry()}
-            onOpenSettings={() => void openSettings()}
-            onHide={() => void hide()}
-          />
-        );
-      } else {
-        content = (
-          <SuccessState
-            text={state.text}
-            pasted={state.pasted}
-            copied={state.copied}
-            locale={locale}
-            onCopy={() => void copyText(state.text)}
-            onRetry={() => void retry()}
-            onHide={() => void hide()}
-          />
-        );
-      }
+      content = (
+        <SuccessState
+          text={state.text}
+          output={state.output}
+          profile={state.profile}
+          locale={locale}
+          onCopy={(text) => void copyText(text)}
+          onRetry={(text) => void retryInsertion(text)}
+          onHide={() => void hide()}
+          onInsert={(text) => void insertResult(text)}
+        />
+      );
       break;
     case "error":
       content = (
         <ErrorState
           error={state.error}
           locale={locale}
-          onRetry={() => void retry()}
-          onOpenSettings={() => void openSettings()}
+          onRetry={() => void (
+            state.error.code === "insertion_failed"
+              ? retryInsertion()
+              : state.error.code === "clipboard_failed"
+                ? copyLastResult()
+              : reprocessAudio()
+          )}
+          onStartNewRecording={() => startNewRecording()}
+          recoveryAction={state.error.code === "clipboard_failed" ? "copy" : "retry"}
+          onOpenSettings={(section) => void openSettings(section)}
           onHide={() => void hide()}
         />
       );
       break;
     case "info":
       content = (
-        <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
+        <div role="status" aria-live="polite" className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
           {t(locale, "overlay.busy")}
         </div>
       );

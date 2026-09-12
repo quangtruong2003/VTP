@@ -26,38 +26,6 @@
         "visible": false,
         "center": false,
         "dragDropEnabled": false
-      },
-      {
-        "label": "settings",
-        "title": "Voice to Prompt Settings",
-        "url": "settings.html",
-        "width": 720,
-        "height": 520,
-        "minWidth": 620,
-        "minHeight": 440,
-        "resizable": true,
-        "decorations": true,
-        "transparent": false,
-        "visible": false,
-        "skipTaskbar": false,
-        "center": true
-      },
-      {
-        "label": "history",
-        "title": "Voice to Prompt History",
-        "url": "history.html",
-        "width": 440,
-        "height": 600,
-        "minWidth": 360,
-        "minHeight": 420,
-        "resizable": true,
-        "decorations": false,
-        "transparent": true,
-        "shadow": false,
-        "alwaysOnTop": true,
-        "visible": false,
-        "skipTaskbar": false,
-        "center": true
       }
     ],
     "security": {

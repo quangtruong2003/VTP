@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { t, type UiLocale } from "@/lib/i18n";
+import type { ProcessingStatus } from "@/lib/types";
 
 export function ProcessingState({
   locale,
@@ -7,14 +8,25 @@ export function ProcessingState({
   showHint,
   showCancel,
   onCancel,
+  status,
+  model,
 }: {
   locale: UiLocale;
   elapsedMs: number;
   showHint: boolean;
   showCancel: boolean;
   onCancel: () => void;
+  status?: ProcessingStatus;
+  model?: string | null;
 }) {
-  const long = elapsedMs >= 8_000;
+  const long = status === "long_running" || elapsedMs >= 8_000;
+  const statusKey = status === "encoding"
+    ? "overlay.encoding"
+    : status === "fallback"
+      ? "overlay.fallback"
+      : long
+        ? "overlay.processingLong"
+        : "overlay.processing";
   return (
     <div className="flex h-full items-center gap-2.5 px-3.5 select-none">
       <div aria-hidden="true" className="flex h-6 items-center gap-1">
@@ -27,10 +39,16 @@ export function ProcessingState({
         ))}
       </div>
       <div className="min-w-0 flex-1">
-        <div className="text-xs font-medium text-zinc-100 truncate">{t(locale, "overlay.processing")}</div>
-        {showHint ? (
+        <div role="status" aria-live="polite" className="text-xs font-medium text-zinc-100 truncate">
+          {t(locale, statusKey)}
+        </div>
+        {showHint && status === "fallback" && model ? (
           <div className="text-[10px] text-zinc-400 truncate">
-            {t(locale, long ? "overlay.processingLong" : "overlay.processingHint")}
+            {t(locale, "overlay.fallbackModel", { model })}
+          </div>
+        ) : showHint && !long ? (
+          <div className="text-[10px] text-zinc-400 truncate">
+            {t(locale, "overlay.processingHint")}
           </div>
         ) : null}
       </div>

@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { AppSettings, PlatformInfo, PublicSettings } from "@/lib/types";
@@ -12,13 +12,13 @@ const settings: AppSettings = {
   max_output_tokens: 2048,
   language: "auto",
   shortcut: "Ctrl+Shift+Space",
+  shortcut_mode: "toggle",
   process_shortcut: "Enter",
   cancel_shortcut: "Escape",
   copy_to_clipboard: true,
   paste_automatically: true,
   device_name: null,
   show_history: true,
-  start_recording_on_open: true,
   ui_locale: "en",
 };
 const platform: PlatformInfo = { os: "windows", primary_modifier: "Ctrl" };
@@ -43,6 +43,7 @@ function props(overrides: Partial<React.ComponentProps<typeof Onboarding>> = {})
     onSetSettingsShortcut: vi.fn(async (shortcut: string) => ({ ...settings, settings_shortcut: shortcut })),
     onShortcutCommitted: vi.fn(),
     onTryNow: vi.fn(),
+    onComplete: vi.fn(async () => {}),
     ...overrides,
   };
 }
@@ -85,5 +86,86 @@ describe("Onboarding", () => {
 
     expect(onTryNow).toHaveBeenCalledTimes(1);
     expect(focusedAtStart).toBe(target);
+  });
+
+  it("shows an inline error when onboarding cannot refresh devices", async () => {
+    const refresh = vi.fn(async () => {
+      throw new Error("device enumeration failed");
+    });
+    render(<Onboarding {...props({ onRefreshDevices: refresh })} />);
+
+    await userEvent.type(screen.getByPlaceholderText(/AIza/), "good-key");
+    await userEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await userEvent.click(screen.getByRole("button", { name: "Refresh devices" }));
+
+    expect(await screen.findByText("Couldn't refresh the microphone list.")).toBeInTheDocument();
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("prevents duplicate microphone test requests while starting", async () => {
+    let resolveMicStart!: () => void;
+    const onMicTestStart = vi.fn(() => new Promise<void>((resolve) => {
+      resolveMicStart = resolve;
+    }));
+    render(<Onboarding {...props({ onMicTestStart })} />);
+
+    await userEvent.type(screen.getByPlaceholderText(/AIza/), "good-key");
+    await userEvent.click(screen.getByRole("button", { name: "Connect" }));
+    const testButton = screen.getByRole("button", { name: "Test microphone" });
+    await userEvent.click(testButton);
+    await userEvent.click(testButton);
+
+    expect(onMicTestStart).toHaveBeenCalledTimes(1);
+    expect(testButton).toBeDisabled();
+
+    resolveMicStart();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Stop test" })).toBeInTheDocument());
+  });
+
+  it("offers a completion action after setup", async () => {
+    const onComplete = vi.fn(async () => {});
+    render(<Onboarding {...props({ onComplete })} />);
+    await userEvent.type(screen.getByPlaceholderText(/AIza/), "good-key");
+    await userEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await userEvent.click(screen.getByRole("button", { name: "Complete" }));
+    expect(onComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps onboarding visible when completing setup fails", async () => {
+    const onComplete = vi.fn(async () => {
+      throw new Error("settings refresh failed");
+    });
+    render(<Onboarding {...props({ onComplete })} />);
+
+    await userEvent.type(screen.getByPlaceholderText(/AIza/), "good-key");
+    await userEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await userEvent.click(screen.getByRole("button", { name: "Complete" }));
+
+    expect(await screen.findByText("Couldn't finish setup. Try again.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Shortcut & output", level: 1 })).toBeInTheDocument();
+  });
+
+  it("keeps one output path enabled when auto-insert is turned off", async () => {
+    const onUpdateImmediate = vi.fn();
+    render(
+      <Onboarding
+        {...props({
+          settings: { ...settings, copy_to_clipboard: false, paste_automatically: true },
+          onUpdateImmediate,
+        })}
+      />,
+    );
+
+    await userEvent.type(screen.getByPlaceholderText(/AIza/), "good-key");
+    await userEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await userEvent.click(screen.getByRole("switch", { name: "Insert result automatically" }));
+
+    expect(onUpdateImmediate).toHaveBeenCalledWith({
+      paste_automatically: false,
+      copy_to_clipboard: true,
+    });
   });
 });

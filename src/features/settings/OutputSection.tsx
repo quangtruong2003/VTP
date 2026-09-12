@@ -25,7 +25,11 @@ export function OutputSection({
             aria-label={t(locale, "settings.insertAutomatically")}
             checked={settings.paste_automatically}
             onCheckedChange={(checked) =>
-              onUpdateImmediate({ paste_automatically: checked })
+              onUpdateImmediate(
+                !checked && !settings.copy_to_clipboard
+                  ? { paste_automatically: false, copy_to_clipboard: true }
+                  : { paste_automatically: checked },
+              )
             }
           />
         </SettingRow>
@@ -37,7 +41,11 @@ export function OutputSection({
             aria-label={t(locale, "settings.keepClipboard")}
             checked={settings.copy_to_clipboard}
             onCheckedChange={(checked) =>
-              onUpdateImmediate({ copy_to_clipboard: checked })
+              onUpdateImmediate(
+                !checked && !settings.paste_automatically
+                  ? { copy_to_clipboard: false, paste_automatically: true }
+                  : { copy_to_clipboard: checked },
+              )
             }
           />
         </SettingRow>
@@ -46,16 +54,6 @@ export function OutputSection({
             {t(locale, "settings.clipboardOffRecovery")}
           </InlineNotice>
         ) : null}
-        <SettingRow
-          label={t(locale, "settings.saveHistory")}
-          description={t(locale, "settings.saveHistoryDesc")}
-        >
-          <Switch
-            aria-label={t(locale, "settings.saveHistory")}
-            checked={settings.show_history}
-            onCheckedChange={(checked) => onUpdateImmediate({ show_history: checked })}
-          />
-        </SettingRow>
       </div>
     </SectionCard>
   );

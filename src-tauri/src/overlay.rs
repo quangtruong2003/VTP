@@ -1,24 +1,89 @@
+use std::sync::{Mutex, OnceLock};
+
 use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, WebviewWindow};
 
 use crate::error::{AppError, AppResult};
 use crate::session::SessionStage;
-use crate::types::{OverlayDismissEvent, OverlayPhase};
+use crate::types::{OverlayDismissEvent, OverlayPhase, SessionId};
+
+#[derive(Debug, Default)]
+struct HoldPressState {
+    next_generation: u64,
+    active_generation: Option<u64>,
+    released_generation: Option<u64>,
+}
+
+fn hold_press_state() -> &'static Mutex<HoldPressState> {
+    static STATE: OnceLock<Mutex<HoldPressState>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(HoldPressState::default()))
+}
+
+fn begin_hold_press() -> u64 {
+    let mut state = hold_press_state().lock().expect("hold state lock");
+    state.next_generation = state.next_generation.wrapping_add(1).max(1);
+    state.active_generation = Some(state.next_generation);
+    state.released_generation = None;
+    state.next_generation
+}
+
+fn release_hold_press() {
+    let mut state = hold_press_state().lock().expect("hold state lock");
+    state.released_generation = state.active_generation;
+}
+
+fn hold_press_is_active(generation: u64) -> bool {
+    let state = hold_press_state().lock().expect("hold state lock");
+    state.active_generation == Some(generation) && state.released_generation != Some(generation)
+}
+
+fn end_hold_press(generation: u64) {
+    let mut state = hold_press_state().lock().expect("hold state lock");
+    if state.active_generation == Some(generation) {
+        state.active_generation = None;
+        state.released_generation = None;
+    }
+}
+
+fn hold_start_can_show(
+    generation_active: bool,
+    active_session: Option<(SessionId, SessionStage)>,
+    session_id: SessionId,
+) -> bool {
+    generation_active && active_session == Some((session_id, SessionStage::Recording))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MonitorSource {
+    Target,
+    Cursor,
+    Primary,
+}
+
+fn select_monitor_source(target: bool, cursor: bool, primary: bool) -> Option<MonitorSource> {
+    if target {
+        Some(MonitorSource::Target)
+    } else if cursor {
+        Some(MonitorSource::Cursor)
+    } else if primary {
+        Some(MonitorSource::Primary)
+    } else {
+        None
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NormalShortcutStartStep {
     BeginRecording,
-    ShowOverlay,
+    PositionAndShowTarget,
 }
 
 fn normal_shortcut_start_steps() -> [NormalShortcutStartStep; 2] {
     [
         NormalShortcutStartStep::BeginRecording,
-        NormalShortcutStartStep::ShowOverlay,
+        NormalShortcutStartStep::PositionAndShowTarget,
     ]
 }
 
-/// The record shortcut owns capture only: start from idle, then pause/resume.
-/// Processing and cancellation are separate session-scoped shortcuts.
 pub fn toggle(app: AppHandle) {
     if let Some(gemini) = app.try_state::<std::sync::Arc<crate::gemini::GeminiClient>>() {
         gemini.prewarm();
@@ -26,12 +91,16 @@ pub fn toggle(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         match crate::session::active_stage(&app).await {
             Some((_id, SessionStage::Recording | SessionStage::Paused)) => {
-                if let Err(e) = crate::session::toggle_pause(app.clone()).await {
-                    log::warn!("record shortcut pause/resume failed: {e}");
+                if let Err(e) = crate::session::process_recording(app.clone()).await {
+                    log::warn!("record shortcut finish failed: {e}");
                 }
             }
             Some((id, SessionStage::Idle)) => {
-                let _ = crate::session::begin_recording(app.clone(), id).await;
+                let target_point = crate::session::target_monitor_point(&app, id).await;
+                match crate::session::begin_recording(app.clone(), id).await {
+                    Ok(()) => show_on_target_without_activation(&app, target_point),
+                    Err(error) => log::warn!("start voice recording failed: {error}"),
+                }
             }
             Some((_id, _)) => {
                 crate::session::acknowledge_busy(&app).await;
@@ -46,18 +115,81 @@ pub fn toggle(app: AppHandle) {
                     }
                 };
                 let mut start_result = Ok(());
+                let target_point = crate::session::target_monitor_point(&app, session_id).await;
                 for step in normal_shortcut_start_steps() {
                     match step {
                         NormalShortcutStartStep::BeginRecording => {
                             start_result =
                                 crate::session::begin_recording(app.clone(), session_id).await;
                         }
-                        NormalShortcutStartStep::ShowOverlay => show_without_activation(&app),
+                        NormalShortcutStartStep::PositionAndShowTarget => {
+                            show_on_target_without_activation(&app, target_point)
+                        }
                     }
                 }
                 if let Err(e) = start_result {
                     log::warn!("start voice recording failed: {e}");
                 }
+            }
+        }
+    });
+}
+
+pub fn start(app: AppHandle) {
+    if let Some(gemini) = app.try_state::<std::sync::Arc<crate::gemini::GeminiClient>>() {
+        gemini.prewarm();
+    }
+    let generation = begin_hold_press();
+    tauri::async_runtime::spawn(async move {
+        if !hold_press_is_active(generation) {
+            return;
+        }
+        if crate::session::active_stage(&app).await.is_some() {
+            end_hold_press(generation);
+            return;
+        }
+        let Ok(session_id) = crate::session::create_turn(&app).await else {
+            end_hold_press(generation);
+            return;
+        };
+        if !hold_press_is_active(generation) {
+            crate::session::cancel_recording(app.clone()).await;
+            end_hold_press(generation);
+            return;
+        }
+        let target_point = crate::session::target_monitor_point(&app, session_id).await;
+        if !hold_press_is_active(generation) {
+            crate::session::cancel_recording(app.clone()).await;
+            end_hold_press(generation);
+            return;
+        }
+        if let Err(error) = crate::session::begin_recording(app.clone(), session_id).await {
+            log::warn!("hold shortcut start failed: {error}");
+            end_hold_press(generation);
+            return;
+        }
+        if !hold_start_can_show(
+            hold_press_is_active(generation),
+            crate::session::active_stage(&app).await,
+            session_id,
+        ) {
+            end_hold_press(generation);
+            return;
+        }
+        show_on_target_without_activation(&app, target_point);
+        end_hold_press(generation);
+    });
+}
+
+pub fn finish_hold(app: AppHandle) {
+    release_hold_press();
+    tauri::async_runtime::spawn(async move {
+        match crate::session::finish_hold(app.clone()).await {
+            Ok(Some(session_id)) => request_ui_exit(&app, session_id),
+            Ok(None) => {}
+            Err(error) => {
+                log::warn!("hold shortcut finish failed: {error}");
+                request_cancel(app).await;
             }
         }
     });
@@ -93,16 +225,20 @@ pub async fn request_cancel(app: AppHandle) {
             }
             CancelLifecycleStep::RequestUiExit => {
                 if let Some(session_id) = cancelled_session_id {
-                    let event = OverlayDismissEvent { session_id };
-                    if let Err(error) = app.emit_to("overlay", "overlay://dismiss", &event) {
-                        log::warn!("overlay dismiss request failed: {error}");
-                        let _ = hide(&app);
-                    }
+                    request_ui_exit(&app, session_id);
                 } else {
                     let _ = hide(&app);
                 }
             }
         }
+    }
+}
+
+fn request_ui_exit(app: &AppHandle, session_id: SessionId) {
+    let event = OverlayDismissEvent { session_id };
+    if let Err(error) = app.emit_to("overlay", "overlay://dismiss", &event) {
+        log::warn!("overlay dismiss request failed: {error}");
+        let _ = hide(app);
     }
 }
 
@@ -120,7 +256,8 @@ pub fn layout_for(phase: &OverlayPhase) -> (f64, f64) {
         | OverlayPhase::Recording { .. }
         | OverlayPhase::Paused { .. }
         | OverlayPhase::Uploading
-        | OverlayPhase::Processing
+        | OverlayPhase::Processing { .. }
+        | OverlayPhase::Opening { .. }
         | OverlayPhase::Success { pasted: true, .. }
         | OverlayPhase::Info { .. } => FAST_PATH_LAYOUT,
     }
@@ -171,52 +308,119 @@ fn position_on_monitor(window: &WebviewWindow, monitor: &tauri::Monitor) {
         bottom_center_position(monitor_width, monitor_height, window_width, window_height);
     let x = monitor_position.x + (local_x as f64 * scale).round() as i32;
     let y = monitor_position.y + (local_y as f64 * scale).round() as i32;
+    // Skip the native SetWindowPos call when the window is already in place;
+    // this runs on every 10 Hz recording tick and unnecessary native calls
+    // cause visible churn on Windows.
+    if let Ok(current) = window.outer_position() {
+        if current.x == x && current.y == y {
+            return;
+        }
+    }
     let _ = window.set_position(PhysicalPosition::new(x, y));
 }
 
-fn position_bottom_center(app: &AppHandle) -> Option<()> {
+fn position_bottom_center(app: &AppHandle, target_point: Option<(f64, f64)>) -> Option<()> {
     let window = app.get_webview_window("overlay")?;
-    let monitor = app
-        .primary_monitor()
+    let target = target_point.and_then(|(x, y)| app.monitor_from_point(x, y).ok().flatten());
+    let cursor = app
+        .cursor_position()
         .ok()
-        .flatten()
-        .or_else(|| window.current_monitor().ok().flatten())?;
+        .and_then(|point| app.monitor_from_point(point.x, point.y).ok().flatten());
+    let primary = app.primary_monitor().ok().flatten();
+    let monitor = select_monitor(target, cursor, primary)?;
     position_on_monitor(&window, &monitor);
     Some(())
 }
 
-pub fn apply_layout(app: &AppHandle, phase: &OverlayPhase) {
+fn select_monitor<T>(target: Option<T>, cursor: Option<T>, primary: Option<T>) -> Option<T> {
+    match select_monitor_source(target.is_some(), cursor.is_some(), primary.is_some())? {
+        MonitorSource::Target => target,
+        MonitorSource::Cursor => cursor,
+        MonitorSource::Primary => primary,
+    }
+}
+
+pub fn apply_layout_with_target(
+    app: &AppHandle,
+    phase: &OverlayPhase,
+    target_point: Option<(f64, f64)>,
+) {
+    apply_layout_internal(app, phase, target_point, true);
+}
+
+fn apply_layout_internal(
+    app: &AppHandle,
+    phase: &OverlayPhase,
+    target_point: Option<(f64, f64)>,
+    prefer_target_monitor: bool,
+) {
     let Some((width, height)) = visible_layout_for(phase) else {
         return;
     };
     let Some(window) = app.get_webview_window("overlay") else {
         return;
     };
-    if let (Ok(current), Ok(scale_factor)) = (window.outer_size(), window.scale_factor()) {
-        if !layout_change_required(
+    let accepts_input = matches!(
+        phase,
+        OverlayPhase::Success { pasted: false, .. } | OverlayPhase::Error { .. }
+    );
+    // set_focusable is a native call; cache the last applied value so the
+    // 10 Hz recording ticks don't repeat it.
+    static LAST_FOCUSABLE: Mutex<Option<bool>> = Mutex::new(None);
+    if let Ok(last) = LAST_FOCUSABLE.lock() {
+        if *last != Some(accepts_input) {
+            drop(last);
+            let _ = window.set_focusable(accepts_input);
+            if let Ok(mut last) = LAST_FOCUSABLE.lock() {
+                *last = Some(accepts_input);
+            }
+        }
+    }
+    let size_needs_update = match (window.outer_size(), window.scale_factor()) {
+        (Ok(current), Ok(scale_factor)) => layout_change_required(
             (current.width, current.height),
             scale_factor,
             (width, height),
-        ) {
+        ),
+        _ => true,
+    };
+    if size_needs_update {
+        if let Err(error) = window.set_size(LogicalSize::new(width, height)) {
+            log::warn!("overlay resize failed: {error}");
             return;
         }
     }
-    if let Err(error) = window.set_size(LogicalSize::new(width, height)) {
-        log::warn!("overlay resize failed: {error}");
-        return;
-    }
-    if let Ok(Some(monitor)) = window.current_monitor() {
+    if prefer_target_monitor {
+        if target_point.is_some() {
+            let _ = position_bottom_center(app, target_point);
+        } else if let Ok(Some(monitor)) = window.current_monitor() {
+            position_on_monitor(&window, &monitor);
+        } else {
+            let _ = position_bottom_center(app, None);
+        }
+    } else if let Ok(Some(monitor)) = window.current_monitor() {
         position_on_monitor(&window, &monitor);
     } else {
-        let _ = position_bottom_center(app);
+        let _ = position_bottom_center(app, None);
+    }
+    if accepts_input {
+        let _ = window.show();
+        let _ = window.set_focus();
     }
 }
 
-pub fn show_without_activation(app: &AppHandle) {
+fn show_on_target_without_activation(app: &AppHandle, target_point: Option<(f64, f64)>) {
+    if app.get_webview_window("overlay").is_none() {
+        return;
+    }
+    let _ = position_bottom_center(app, target_point);
+    show_without_activation_native(app);
+}
+
+fn show_without_activation_native(app: &AppHandle) {
     let Some(w) = app.get_webview_window("overlay") else {
         return;
     };
-    let _ = position_bottom_center(app);
     #[cfg(target_os = "windows")]
     {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -284,7 +488,38 @@ pub fn hide(app: &AppHandle) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ErrorCode, FrontendError};
+    use crate::types::{ErrorCode, FrontendError, OutputOutcome};
+
+    #[test]
+    fn monitor_fallback_prefers_target_then_cursor_then_primary() {
+        assert_eq!(
+            select_monitor_source(true, true, true),
+            Some(MonitorSource::Target)
+        );
+        assert_eq!(
+            select_monitor_source(false, true, true),
+            Some(MonitorSource::Cursor)
+        );
+        assert_eq!(
+            select_monitor_source(false, false, true),
+            Some(MonitorSource::Primary)
+        );
+        assert_eq!(select_monitor_source(false, false, false), None);
+    }
+
+    #[test]
+    fn monitor_selection_returns_the_highest_priority_available_monitor() {
+        assert_eq!(
+            select_monitor(Some("target"), Some("cursor"), Some("primary")),
+            Some("target")
+        );
+        assert_eq!(
+            select_monitor(None, Some("cursor"), Some("primary")),
+            Some("cursor")
+        );
+        assert_eq!(select_monitor(None, None, Some("primary")), Some("primary"));
+        assert_eq!(select_monitor::<&str>(None, None, None), None);
+    }
 
     #[test]
     fn bottom_center_position_ignores_cursor_coordinates() {
@@ -315,9 +550,39 @@ mod tests {
             normal_shortcut_start_steps(),
             [
                 NormalShortcutStartStep::BeginRecording,
-                NormalShortcutStartStep::ShowOverlay,
+                NormalShortcutStartStep::PositionAndShowTarget,
             ]
         );
+    }
+
+    #[test]
+    fn releasing_hold_before_start_invalidates_the_pending_start() {
+        let generation = begin_hold_press();
+        assert!(hold_press_is_active(generation));
+        release_hold_press();
+        assert!(!hold_press_is_active(generation));
+        end_hold_press(generation);
+    }
+
+    #[test]
+    fn hold_start_requires_the_same_live_recording_session_before_showing() {
+        let session_id = 7;
+        assert!(hold_start_can_show(
+            true,
+            Some((session_id, SessionStage::Recording)),
+            session_id
+        ));
+        assert!(!hold_start_can_show(
+            false,
+            Some((session_id, SessionStage::Recording)),
+            session_id
+        ));
+        assert!(!hold_start_can_show(
+            true,
+            Some((session_id, SessionStage::Starting)),
+            session_id
+        ));
+        assert!(!hold_start_can_show(true, None, session_id));
     }
 
     #[test]
@@ -325,6 +590,8 @@ mod tests {
         let recording = layout_for(&OverlayPhase::Recording {
             elapsed_ms: 0,
             level: 0,
+            health: crate::types::RecordingHealth::Healthy,
+            warning: None,
         });
         assert_eq!(recording, (280.0, 48.0));
         assert_eq!(
@@ -332,12 +599,22 @@ mod tests {
             recording
         );
         assert_eq!(layout_for(&OverlayPhase::Uploading), recording);
-        assert_eq!(layout_for(&OverlayPhase::Processing), recording);
+        assert_eq!(
+            layout_for(&OverlayPhase::Processing {
+                status: crate::types::ProcessingStatus::Requesting,
+                model: None,
+                attempt: 1,
+                total_attempts: 1,
+            }),
+            recording
+        );
         assert_eq!(
             layout_for(&OverlayPhase::Success {
                 text: "x".into(),
                 pasted: true,
                 copied: true,
+                output: OutputOutcome::Inserted,
+                profile: None,
             }),
             recording
         );
@@ -356,6 +633,8 @@ mod tests {
                 text: "x".into(),
                 pasted: false,
                 copied: true,
+                output: OutputOutcome::Copied,
+                profile: None,
             }),
             (350.0, 160.0)
         );

@@ -36,7 +36,7 @@ export function SettingsSidebar({
   locale: UiLocale;
 }) {
   return (
-    <nav aria-label="Settings" className="w-40 shrink-0 border-r border-zinc-800 bg-zinc-950/90 px-2 py-3.5 select-none">
+    <nav aria-label={t(locale, "settings.navigation")} className="w-40 shrink-0 border-r border-zinc-800 bg-zinc-950/90 px-2 py-3.5 select-none">
       <div className="mb-3 px-2 text-[11px] font-semibold tracking-wide text-zinc-400">
         VoiceToPrompt
       </div>

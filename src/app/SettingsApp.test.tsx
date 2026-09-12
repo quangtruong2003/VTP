@@ -15,8 +15,9 @@ const mocks = vi.hoisted(() => ({
   historyList: vi.fn(),
   historyCopy: vi.fn(),
   historyClear: vi.fn(),
-  onHistoryChanged: vi.fn(),
+  openHistory: vi.fn(),
   onSettingsSection: vi.fn(),
+  onMicLevel: vi.fn(),
   toggle: vi.fn(),
   settingsSectionHandler: undefined as ((section: string) => void) | undefined,
 }));
@@ -39,9 +40,10 @@ vi.mock("@/lib/settings", () => ({
     historyList: mocks.historyList,
     historyCopy: mocks.historyCopy,
     historyClear: mocks.historyClear,
+    openHistory: mocks.openHistory,
   },
-  onHistoryChanged: mocks.onHistoryChanged,
   onSettingsSection: mocks.onSettingsSection,
+  onMicLevel: mocks.onMicLevel,
 }));
 
 vi.mock("@/lib/overlay", () => ({
@@ -60,13 +62,13 @@ const baseSettings: AppSettings = {
   max_output_tokens: 2048,
   language: "auto",
   shortcut: "Ctrl+Shift+Space",
+  shortcut_mode: "toggle",
   process_shortcut: "Enter",
   cancel_shortcut: "Escape",
   copy_to_clipboard: true,
   paste_automatically: true,
   device_name: null,
   show_history: true,
-  start_recording_on_open: true,
   ui_locale: "en",
 };
 
@@ -107,6 +109,7 @@ describe("SettingsApp Task 12 production integration", () => {
     mocks.historyList.mockResolvedValue([entry]);
     mocks.historyCopy.mockResolvedValue(undefined);
     mocks.historyClear.mockResolvedValue(undefined);
+    mocks.openHistory.mockResolvedValue(undefined);
     mocks.get.mockResolvedValue({ ...baseSettings } satisfies PublicSettings);
     mocks.connectApiKey.mockResolvedValue(undefined);
     mocks.listModels.mockResolvedValue([]);
@@ -114,11 +117,41 @@ describe("SettingsApp Task 12 production integration", () => {
       ...baseSettings,
       shortcut,
     }));
-    mocks.onHistoryChanged.mockImplementation(async () => vi.fn());
     mocks.onSettingsSection.mockImplementation(async (callback: (section: string) => void) => {
       mocks.settingsSectionHandler = callback;
       return vi.fn();
     });
+    mocks.onMicLevel.mockResolvedValue(vi.fn());
+  });
+
+  it("shows a lightweight loading shell while settings are loading", () => {
+    const store = storeFor(baseSettings);
+    mocks.useSettingsStore.mockReturnValue({
+      ...store,
+      settings: null,
+      loading: true,
+    });
+
+    render(<SettingsApp />);
+
+    expect(screen.getByRole("status", { name: "Loading settings" })).toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
+  });
+
+  it("shows a localized fallback when settings cannot be loaded", () => {
+    const store = storeFor(baseSettings);
+    mocks.useSettingsStore.mockReturnValue({
+      ...store,
+      settings: null,
+      loading: false,
+      loadError: null,
+    });
+
+    render(<SettingsApp />);
+
+    expect(screen.getByText("Couldn't load settings.")).toBeInTheDocument();
   });
 
   it("renders onboarding instead of the full settings shell until Gemini is connected", () => {
@@ -129,7 +162,20 @@ describe("SettingsApp Task 12 production integration", () => {
     expect(screen.queryByRole("navigation", { name: "Settings" })).not.toBeInTheDocument();
   });
 
-  it("routes tray History events to the real History section and wires Rust copy/clear", async () => {
+  it("opens the requested section when the settings window is created lazily", () => {
+    window.history.replaceState({}, "", "/settings.html?section=voice");
+    mocks.useSettingsStore.mockReturnValue(storeFor(baseSettings));
+
+    try {
+      render(<SettingsApp />);
+
+      expect(screen.getByText("Test microphone")).toBeInTheDocument();
+    } finally {
+      window.history.replaceState({}, "", "/settings.html");
+    }
+  });
+
+  it("routes tray History events to privacy controls and wires open/clear", async () => {
     mocks.useSettingsStore.mockReturnValue(storeFor(baseSettings));
     render(<SettingsApp />);
 
@@ -138,14 +184,18 @@ describe("SettingsApp Task 12 production integration", () => {
       mocks.settingsSectionHandler?.("history");
     });
 
-    expect(await screen.findByText(entry.response_text)).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Copy result" }));
-    expect(mocks.historyCopy).toHaveBeenCalledWith(entry.id);
+    expect(screen.queryByText(entry.response_text)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Open History" }));
+    expect(mocks.openHistory).toHaveBeenCalledTimes(1);
 
     await userEvent.click(screen.getByRole("button", { name: "Clear history" }));
     await userEvent.click(screen.getByRole("button", { name: "Confirm clear" }));
     expect(mocks.historyClear).toHaveBeenCalledTimes(1);
-    expect(await screen.findByText("No content yet")).toBeInTheDocument();
+
+    await act(async () => {
+      mocks.settingsSectionHandler?.("voice");
+    });
+    expect(screen.getByText("Test microphone")).toBeInTheDocument();
   });
 
   it("uses the lifecycle-aware overlay toggle for onboarding Try now", async () => {
@@ -154,10 +204,32 @@ describe("SettingsApp Task 12 production integration", () => {
 
     await userEvent.type(screen.getByPlaceholderText(/AIza/), "valid-key");
     await userEvent.click(screen.getByRole("button", { name: "Connect" }));
-    expect(mocks.get).not.toHaveBeenCalled();
+    expect(mocks.get).toHaveBeenCalledTimes(1);
     await userEvent.click(screen.getByRole("button", { name: "Continue" }));
     await userEvent.click(screen.getByRole("button", { name: "Try now" }));
 
     expect(mocks.toggle).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps onboarding visible after key refresh until Complete is pressed", async () => {
+    const store = storeFor({ ...baseSettings, api_key_set: false });
+    store.replaceSettings.mockImplementation((snapshot: PublicSettings) => {
+      store.settings = snapshot;
+    });
+    mocks.useSettingsStore.mockReturnValue(store);
+    const { rerender } = render(<SettingsApp />);
+
+    await userEvent.type(screen.getByPlaceholderText(/AIza/), "valid-key");
+    await userEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await waitFor(() => expect(mocks.get).toHaveBeenCalledTimes(1));
+
+    rerender(<SettingsApp />);
+    expect(screen.getByRole("heading", { name: "Microphone setup", level: 1 })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await userEvent.click(screen.getByRole("button", { name: "Complete" }));
+    rerender(<SettingsApp />);
+
+    expect(screen.getByRole("navigation", { name: "Settings" })).toBeInTheDocument();
   });
 });

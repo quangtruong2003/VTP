@@ -6,8 +6,8 @@ import { InlineNotice } from "@/components/inline-notice";
 import { SectionCard } from "@/components/section-card";
 import { SettingRow } from "@/components/setting-row";
 import { StatusBadge } from "@/components/status-badge";
-import { t, type UiLocale } from "@/lib/i18n";
-import type { AppSettings, GeminiModelInfo } from "@/lib/types";
+import { promptProfileLabel, t, type UiLocale } from "@/lib/i18n";
+import type { AppSettings, GeminiModelInfo, PromptProfile } from "@/lib/types";
 
 const DEFAULT_SYSTEM_PROMPT =
   "You are a helpful assistant. The user speaks to you and their speech is transcribed by the model. Respond with text that can be directly inserted into the application they were typing in. Be concise and match the user's language. Do not add markdown formatting unless asked.";
@@ -20,6 +20,14 @@ const RESPONSE_LANGUAGES = [
   ["French", "fr"],
   ["German", "de"],
 ] as const;
+
+const DEFAULT_PROMPT_PROFILES: PromptProfile[] = [
+  { id: "raw", name: "Raw", prompt: "Return a faithful transcription with only obvious speech disfluencies removed." },
+  { id: "natural", name: "Natural", prompt: "Rewrite the transcript into clear, natural text while preserving the speaker's meaning and tone." },
+  { id: "email", name: "Email", prompt: "Turn the transcript into a concise, polished email message." },
+  { id: "summary", name: "Summary", prompt: "Summarize the transcript into concise key points." },
+  { id: "code", name: "Code", prompt: "Turn the transcript into clean code or a precise coding instruction, preserving technical details." },
+];
 
 function localizedLanguageName(locale: UiLocale, languageCode: string, fallback: string) {
   try {
@@ -34,6 +42,7 @@ export function AiPromptSection({
   locale,
   models,
   modelsLoading,
+  modelsError,
   onConnect,
   onDisconnect,
   onLoadModels,
@@ -44,6 +53,7 @@ export function AiPromptSection({
   locale: UiLocale;
   models: GeminiModelInfo[];
   modelsLoading: boolean;
+  modelsError?: boolean;
   onConnect: (key: string) => Promise<void>;
   onDisconnect: () => Promise<void>;
   onLoadModels: () => Promise<void>;
@@ -53,8 +63,13 @@ export function AiPromptSection({
   const [connected, setConnected] = useState(settings.api_key_set);
   const [replaceMode, setReplaceMode] = useState(false);
   const [apiKey, setApiKey] = useState("");
+  const [connecting, setConnecting] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
   const [connectionError, setConnectionError] = useState(false);
+  const [openUrlError, setOpenUrlError] = useState(false);
   const [advanced, setAdvanced] = useState(false);
+  const [customProfileName, setCustomProfileName] = useState("");
+  const [customProfilePrompt, setCustomProfilePrompt] = useState("");
   const loadedModels = useRef(false);
 
   useEffect(() => {
@@ -74,7 +89,8 @@ export function AiPromptSection({
 
   const connect = async () => {
     const candidate = apiKey.trim();
-    if (!candidate) return;
+    if (!candidate || connecting) return;
+    setConnecting(true);
     setConnectionError(false);
     try {
       await onConnect(candidate);
@@ -84,11 +100,15 @@ export function AiPromptSection({
       loadedModels.current = false;
     } catch {
       setConnectionError(true);
+    } finally {
+      setConnecting(false);
     }
   };
 
   const disconnect = async () => {
+    if (disconnecting) return;
     setConnectionError(false);
+    setDisconnecting(true);
     try {
       await onDisconnect();
       setConnected(false);
@@ -96,6 +116,17 @@ export function AiPromptSection({
       setApiKey("");
     } catch {
       setConnectionError(true);
+    } finally {
+      setDisconnecting(false);
+    }
+  };
+
+  const openApiKeyPage = async () => {
+    setOpenUrlError(false);
+    try {
+      await openUrl("https://aistudio.google.com/app/apikey");
+    } catch {
+      setOpenUrlError(true);
     }
   };
 
@@ -103,6 +134,14 @@ export function AiPromptSection({
   const fallbackList = settings.fallback_models ?? [];
   const activeChain = [settings.model, ...fallbackList];
   const availableForFallback = models.filter((m) => !activeChain.includes(m.name));
+  const promptProfiles = settings.prompt_profiles?.length
+    ? settings.prompt_profiles
+    : DEFAULT_PROMPT_PROFILES;
+  const requestedProfileId = settings.prompt_profile_id ?? "natural";
+  const selectedProfileId = promptProfiles.some((profile) => profile.id === requestedProfileId)
+    ? requestedProfileId
+    : "";
+  const selectedProfile = promptProfiles.find((profile) => profile.id === selectedProfileId);
 
   const addFallback = (modelName: string) => {
     const updated = [...fallbackList, modelName];
@@ -112,6 +151,19 @@ export function AiPromptSection({
   const removeFallback = (indexToRemove: number) => {
     const updated = fallbackList.filter((_, idx) => idx !== indexToRemove);
     onUpdateImmediate({ fallback_models: updated });
+  };
+
+  const addCustomProfile = () => {
+    const name = customProfileName.trim();
+    const prompt = customProfilePrompt.trim();
+    if (!name || !prompt) return;
+    const id = `custom-${Date.now()}`;
+    onUpdateImmediate({
+      prompt_profile_id: id,
+      prompt_profiles: [...promptProfiles, { id, name, prompt }],
+    });
+    setCustomProfileName("");
+    setCustomProfilePrompt("");
   };
 
   return (
@@ -128,8 +180,8 @@ export function AiPromptSection({
                 <Button type="button" size="sm" variant="outline" className="h-7 px-2.5 text-xs" onClick={() => setReplaceMode(true)}>
                   {t(locale, "settings.replace")}
                 </Button>
-                <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => void disconnect()}>
-                  {t(locale, "settings.disconnect")}
+                <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => void disconnect()} disabled={disconnecting} aria-busy={disconnecting}>
+                  {disconnecting ? t(locale, "settings.disconnecting") : t(locale, "settings.disconnect")}
                 </Button>
               </div>
             </div>
@@ -144,8 +196,12 @@ export function AiPromptSection({
                   onChange={(event) => setApiKey(event.target.value)}
                   className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 />
-                <Button type="button" size="sm" className="h-8 px-3 text-xs" onClick={() => void connect()} disabled={!apiKey.trim()}>
-                  {connected ? t(locale, "settings.replace") : t(locale, "settings.connect")}
+                <Button type="button" size="sm" className="h-8 px-3 text-xs" onClick={() => void connect()} disabled={!apiKey.trim() || connecting} aria-busy={connecting}>
+                  {connecting
+                    ? t(locale, "settings.connecting")
+                    : connected
+                      ? t(locale, "settings.replace")
+                      : t(locale, "settings.connect")}
                 </Button>
                 {replaceMode ? (
                   <Button type="button" size="sm" variant="ghost" className="h-8 px-2.5 text-xs" onClick={() => setReplaceMode(false)}>
@@ -160,7 +216,7 @@ export function AiPromptSection({
                   size="sm"
                   variant="ghost"
                   className="h-6 px-2 text-[11px]"
-                  onClick={() => void openUrl("https://aistudio.google.com/app/apikey")}
+                  onClick={() => void openApiKeyPage()}
                 >
                   <ExternalLink className="size-3 shrink-0" aria-hidden="true" />
                   {t(locale, "settings.getApiKey")}
@@ -170,6 +226,9 @@ export function AiPromptSection({
           )}
           {connectionError ? (
             <InlineNotice tone="error">{t(locale, "settings.connectionFailed")}</InlineNotice>
+          ) : null}
+          {openUrlError ? (
+            <InlineNotice tone="error">{t(locale, "settings.openApiKeyFailed")}</InlineNotice>
           ) : null}
         </div>
       </SectionCard>
@@ -205,6 +264,9 @@ export function AiPromptSection({
                   <span className="font-mono">{selectedModel.name}</span>
                   {selectedModel.description ? ` · ${selectedModel.description}` : ""}
                 </p>
+              ) : null}
+              {modelsError ? (
+                <InlineNotice tone="error">{t(locale, "settings.modelsUnavailable")}</InlineNotice>
               ) : null}
             </div>
 
@@ -288,13 +350,54 @@ export function AiPromptSection({
             </div>
 
             <div className="space-y-1.5">
+              <label htmlFor="prompt-profile" className="text-xs font-medium">
+                {t(locale, "settings.promptProfile")}
+              </label>
+              <select
+                id="prompt-profile"
+                aria-label={t(locale, "settings.promptProfile")}
+                value={selectedProfileId}
+                onChange={(event) => onUpdateImmediate({ prompt_profile_id: event.target.value })}
+                className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <option value="">{t(locale, "settings.customInstructions")}</option>
+                {promptProfiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {promptProfileLabel(locale, profile.id, profile.name)}
+                  </option>
+                ))}
+              </select>
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  aria-label={t(locale, "settings.customProfileName")}
+                  value={customProfileName}
+                  onChange={(event) => setCustomProfileName(event.target.value)}
+                  placeholder={t(locale, "settings.customProfileName")}
+                  className="h-8 rounded-md border border-input bg-background px-2.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                />
+                <input
+                  aria-label={t(locale, "settings.customProfilePrompt")}
+                  value={customProfilePrompt}
+                  onChange={(event) => setCustomProfilePrompt(event.target.value)}
+                  placeholder={t(locale, "settings.customProfilePrompt")}
+                  className="h-8 rounded-md border border-input bg-background px-2.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                />
+              </div>
+              <Button type="button" size="sm" variant="outline" onClick={addCustomProfile} disabled={!customProfileName.trim() || !customProfilePrompt.trim()}>
+                {t(locale, "settings.addCustomProfile")}
+              </Button>
+            </div>
+
+            <div className="space-y-1.5">
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <label htmlFor="system-prompt" className="text-xs font-medium">
                     {t(locale, "settings.instructionsForAi")}
                   </label>
                   <p className="mt-0.5 text-[11px] text-muted-foreground">
-                    {t(locale, "settings.instructionsForAiDesc")}
+                    {selectedProfile
+                      ? t(locale, "settings.profileInstructionsCombined")
+                      : t(locale, "settings.instructionsForAiDesc")}
                   </p>
                 </div>
                 <Button

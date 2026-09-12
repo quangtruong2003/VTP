@@ -33,9 +33,14 @@ The redesign must prioritize, in this order:
 
 - Clear product concept: shortcut → voice → Gemini → insert.
 - Rust owns microphone/network/clipboard/injection work; React is mostly presentation.
-- Overlay and Settings are separate windows.
+- Overlay, Settings, and History are separate native windows. First-run
+  onboarding is a guided state inside Settings, not a fourth window.
 - Local history exists and audio is not stored.
 - API key is isolated in the OS credential store.
+- `src-tauri/capabilities/default.json` targets all three windows with one
+  shared permission set. It gates plugin APIs such as window/events,
+  clipboard, global shortcuts, opener, and autostart; it is not a per-window
+  Rust command allow-list.
 - shadcn/Radix primitives provide a reasonable accessibility foundation.
 - The current frontend passes `tsc --noEmit && vite build`.
 
@@ -169,10 +174,10 @@ VoiceToPromptV2 is an assistant to another application. The user's document, bro
 
 ### 5.3 One gesture should complete a turn
 
-With auto-record enabled:
+The configured main shortcut completes a turn in either supported recording mode:
 
-- Shortcut 1: begin recording.
-- Shortcut 2: stop and process.
+- Toggle: the first press begins recording; the second press stops and processes.
+- Hold-to-talk: pressing begins recording; releasing stops and processes.
 
 The user should not need to switch from keyboard to mouse.
 
@@ -202,11 +207,11 @@ Temperature, token limits, manual model identifiers, and similar implementation-
 
 ## 6. Information architecture
 
-VoiceToPromptV2 has three surfaces:
+VoiceToPromptV2 has three native windows:
 
 1. **Overlay** — transient, context-sensitive, used during a voice turn.
-2. **Settings** — persistent control center.
-3. **First-run onboarding** — a guided subset of Settings shown only until the app can complete its first turn.
+2. **Settings** — persistent control center and first-run onboarding host.
+3. **History** — standalone searchable list for saved results.
 
 The tray remains a launcher/status affordance and should not duplicate the full settings hierarchy.
 
@@ -217,7 +222,9 @@ The tray remains a launcher/status affordance and should not duplicate the full 
 ## 7.1 Core behavior
 
 The overlay is a **dynamic floating utility**, not a fixed dialog.
-Default placement remains near the pointer/current workspace, but it must be clamped to the active monitor and should prefer a position that does not cover the current pointer target.
+Default placement is bottom-center on the target app's monitor. If the target
+monitor is unavailable, placement falls back to the cursor monitor and then the
+primary monitor. The final position is clamped to the selected monitor.
 
 ### Target sizes
 
@@ -225,7 +232,7 @@ These are logical CSS sizes before platform scaling:
 
 | State | Width | Typical height | Notes |
 | --- | ---: | ---: | --- |
-| Idle/manual start | 360 px | 112 px | Only when auto-record is disabled |
+| Idle/recovery start | 360 px | 112 px | Shown only while the overlay is idle or after a reset; normal entry uses Toggle or Hold-to-talk |
 | Recording | 360 px | 96 px | Primary daily state |
 | Processing | 360 px | 96 px | Same footprint as recording |
 | Success, inserted | 360 px | 88–104 px | Auto-dismiss |
@@ -262,7 +269,7 @@ Left to right:
 
 Secondary text below or integrated into the waveform area:
 
-> `Ctrl+Shift+Space` để hoàn tất
+> Phím tắt đã cấu hình để hoàn tất
 
 The actual configured shortcut is rendered as platform-native keycaps, never as raw Tauri syntax.
 
@@ -272,7 +279,7 @@ Replace the current single scaling ring with an **8–12 bar smoothed voice mete
 Requirements:
 
 - Driven by the existing Rust level data.
-- Apply frontend smoothing/interpolation so 4 Hz backend updates do not look stepped.
+- Apply frontend smoothing/interpolation so the 10 Hz (100 ms) backend updates do not look stepped.
 - Bars react with a short attack and slower decay.
 - Avoid random motion when microphone level is zero.
 - The live indicator remains visible even in silence.
@@ -283,6 +290,16 @@ Suggested behavior:
 - Meter bars animate continuously from actual level.
 - Recording dot uses a muted warm red semantic color; the overall product accent remains cool blue.
 
+### Native audio path
+
+- Capture uses the microphone device's native default format on a dedicated
+  Rust thread; stream creation must not force 16 kHz or mono.
+- On stop, Rust downmixes and linearly resamples the captured samples to
+  16 kHz mono, then writes a 16-bit PCM WAV payload for Gemini.
+- The overlay level event cadence is 100 ms (10 Hz); Settings microphone-test
+  level events are emitted every 150 ms. The UI may smooth these events but
+  must not invent microphone motion when the level is zero.
+
 ### Keyboard/focus semantics
 
 In the default hotkey path, the overlay **does not receive focus**.
@@ -290,17 +307,18 @@ The same global shortcut toggles recording completion.
 If a user intentionally clicks the overlay, the captured target application remains stored separately, so later insertion still goes to the original target.
 Do not advertise `Enter` or `Esc` as universal controls when the overlay is intentionally not focused.
 
-## 7.4 Idle/manual-start state
+## 7.4 Shortcut modes
 
-This state exists only if “Start recording immediately” is disabled.
-Content:
+The persisted recording mode is either **Toggle** or **Hold-to-talk**:
 
-- Quiet microphone icon.
-- “Sẵn sàng ghi âm”.
-- Primary button “Bắt đầu”.
-- Hint that the configured global shortcut starts recording.
+- **Toggle:** press the configured main shortcut once to start recording and
+  press it again to finish and process.
+- **Hold-to-talk:** press and hold the configured main shortcut to record and
+  release it to finish and process.
 
-Pressing the global shortcut while the visible overlay is idle must start recording rather than reopening another idle state.
+There is no separate persisted recording-start mode setting. The
+normal shortcut path begins recording as part of the first press, and the
+overlay appears without taking focus from the captured target.
 
 ## 7.5 Processing state
 
@@ -404,7 +422,7 @@ On global shortcut activation:
 2. Create a new session ID.
 3. Store target in that session.
 4. Show/reposition overlay without activation.
-5. Start audio if configured.
+5. Start recording as part of the configured shortcut action.
 
 The target must not be inferred later from “previous focus”.
 
@@ -420,7 +438,7 @@ Behavior for global shortcut while active:
 | Recording | Stop and process |
 | Processing | No second session; provide subtle acknowledgement |
 | Success/error terminal | Start a fresh session |
-| Idle/manual | Start recording |
+| Idle/recovery | Start recording |
 
 ## 8.3 Real cancellation
 
@@ -493,8 +511,9 @@ Top status card:
 
 Below that:
 
-- Start recording immediately toggle.
 - UI language.
+- A summary of the selected Toggle or Hold-to-talk shortcut mode, configured
+  in the Shortcut section.
 - Small “Try VoiceToPrompt” button that opens a test recording.
 
 No technical identifiers are shown unless the user requests details.
@@ -629,7 +648,6 @@ Rows:
 
 - Chèn kết quả tự động.
 - Giữ kết quả trong clipboard.
-- Lưu lịch sử cục bộ.
 
 If automatic insertion is disabled, success state should not claim insertion.
 If clipboard retention is disabled, explain that insertion failure may require clicking Copy manually.
@@ -644,6 +662,8 @@ Each row shows:
 - Recording duration.
 - Copy action on hover/focus.
 - Model metadata only as secondary detail.
+
+History privacy is controlled by one “Save local history” toggle in this section.
 
 Add lightweight local search/filter if history volume justifies it; do not add remote indexing.
 Empty state:
@@ -838,7 +858,8 @@ All user-facing Rust errors should be converted into typed error codes/data; tra
 ## 14.4 Screen readers
 
 - Recording meter has a textual accessible state; individual bars are decorative.
-- Status changes use appropriate live-region behavior without announcing every 250 ms level update.
+- Status changes use appropriate live-region behavior without announcing every
+  100 ms microphone level update.
 - Icon-only actions have accessible names.
 
 ## 14.5 Reduced motion
@@ -1071,10 +1092,12 @@ The redesign is accepted only when all of the following are true.
 
 ## Core voice flow
 
-- Opening via global shortcut does not steal focus in the default auto-record path.
+- Opening via the global shortcut starts recording and does not steal focus.
 - The app captures the insertion target before showing/focusing any VoiceToPrompt window.
 - Recording feedback appears immediately and visibly reacts to microphone level.
 - Pressing the configured global shortcut again stops recording and begins processing.
+- In Hold-to-talk mode, releasing the configured global shortcut stops recording
+  and begins processing.
 - Processing cannot create overlapping voice sessions.
 - Cancelling a session guarantees no later paste/copy from that session.
 - Successful auto-insertion produces a compact confirmation and auto-dismisses.
@@ -1163,6 +1186,7 @@ The following decisions are intentionally fixed so implementation does not drift
 - Daily overlay: **compact, state-sized, non-modal**.
 - Default interaction: **same global shortcut starts and finishes recording**.
 - Normal shortcut flow: **does not steal focus**.
+- Recording mode: **Toggle** or **Hold-to-talk**; recording starts through the configured shortcut or the explicit idle/recovery action.
 - Settings navigation: **left sidebar**.
 - Settings persistence: **auto-save**, except explicit credential/shortcut commit operations.
 - Shortcut configuration: **key capture**, never raw syntax as the primary UI.

@@ -60,7 +60,7 @@ export function reduceOverlayAction(
     showLongProcessingHint: false,
     showCancel: false,
     autoDismissEligible:
-      nextState.phase === "success" && nextState.pasted === true,
+      nextState.phase === "success" && nextState.output === "inserted",
   };
 }
 

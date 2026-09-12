@@ -19,19 +19,21 @@ function VoiceMeterComponent({ level, locale }: { level: number; locale: UiLocal
   const targetRef = useRef(currentRef.current);
 
   const paint = useCallback((amplitude: number) => {
-    const percentage = Math.round(amplitude * 100);
-    const container = containerRef.current;
-    if (container) {
-      container.dataset.level = String(percentage);
-      container.setAttribute("aria-valuenow", String(percentage));
-      container.setAttribute(
-        "aria-valuetext",
-        `${t(locale, "overlay.voiceLevel")} ${percentage}%`,
-      );
-    }
     barsRef.current.forEach((bar, index) => {
       if (bar) bar.style.transform = `scaleY(${0.12 + BAR_PROFILE[index] * amplitude * 0.88})`;
     });
+  }, []);
+
+  const updateAccessibility = useCallback((amplitude: number) => {
+    const percentage = Math.round(amplitude * 100);
+    const container = containerRef.current;
+    if (!container) return;
+    container.dataset.level = String(percentage);
+    container.setAttribute("aria-valuenow", String(percentage));
+    container.setAttribute(
+      "aria-valuetext",
+      `${t(locale, "overlay.voiceLevel")} ${percentage}%`,
+    );
   }, [locale]);
 
   const stopFrame = useCallback(() => {
@@ -41,6 +43,7 @@ function VoiceMeterComponent({ level, locale }: { level: number; locale: UiLocal
 
   useEffect(() => {
     targetRef.current = normalize(level);
+    updateAccessibility(targetRef.current);
     const reducedMotion = typeof matchMedia === "function"
       && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -71,12 +74,13 @@ function VoiceMeterComponent({ level, locale }: { level: number; locale: UiLocal
     };
 
     frameRef.current = requestAnimationFrame(tick);
-  }, [level, paint, stopFrame]);
+  }, [level, paint, stopFrame, updateAccessibility]);
 
   useEffect(() => {
+    updateAccessibility(currentRef.current);
     paint(currentRef.current);
     return stopFrame;
-  }, [paint, stopFrame]);
+  }, [paint, stopFrame, updateAccessibility]);
 
   return (
     <div
@@ -98,7 +102,7 @@ function VoiceMeterComponent({ level, locale }: { level: number; locale: UiLocal
           ref={(element) => {
             barsRef.current[index] = element;
           }}
-          className="h-[20px] w-1 origin-center rounded-full bg-zinc-100/90 will-change-transform"
+          className="h-[20px] w-1 origin-center rounded-full bg-zinc-100/90"
           style={{ transform: `scaleY(${0.12 + BAR_PROFILE[index] * currentRef.current * 0.88})` }}
         />
       ))}

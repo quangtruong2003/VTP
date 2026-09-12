@@ -1,6 +1,6 @@
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{TrayIconBuilder, TrayIconEvent};
-use tauri::{App, AppHandle, Emitter, Manager, Wry};
+use tauri::{App, AppHandle, Emitter, Manager, WebviewWindow, Wry};
 
 use crate::types::AppSettings;
 
@@ -90,23 +90,33 @@ fn build_menu(app: &AppHandle, settings: &AppSettings) -> tauri::Result<Menu<Wry
     Menu::with_items(app, &[&start, &settings_item, &history, &quit])
 }
 
-pub fn show_settings(app: &AppHandle) {
+pub fn show_settings(app: &AppHandle) -> tauri::Result<WebviewWindow<Wry>> {
+    show_settings_at(app, None)
+}
+
+pub fn show_settings_at(
+    app: &AppHandle,
+    section: Option<String>,
+) -> tauri::Result<WebviewWindow<Wry>> {
     if let Some(window) = app.get_webview_window("settings") {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
+        window.unminimize()?;
+        window.show()?;
+        window.set_focus()?;
+        if let Some(section) = section {
+            window.emit("app://settings-section", section)?;
+        }
+        Ok(window)
     } else {
-        let _ = tauri::WebviewWindowBuilder::new(
-            app,
-            "settings",
-            tauri::WebviewUrl::App("settings.html".into()),
-        )
-        .title("Voice to Prompt Settings")
-        .inner_size(720.0, 520.0)
-        .min_inner_size(620.0, 440.0)
-        .resizable(true)
-        .center()
-        .build();
+        let url = section
+            .map(|section| format!("settings.html?section={section}"))
+            .unwrap_or_else(|| "settings.html".into());
+        tauri::WebviewWindowBuilder::new(app, "settings", tauri::WebviewUrl::App(url.into()))
+            .title("Voice to Prompt Settings")
+            .inner_size(720.0, 520.0)
+            .min_inner_size(620.0, 440.0)
+            .resizable(true)
+            .center()
+            .build()
     }
 }
 
@@ -117,32 +127,41 @@ pub fn toggle_settings(app: &AppHandle) {
             return;
         }
     }
-    show_settings(app);
+    let _ = show_settings(app);
 }
 
-pub fn show_history(app: &AppHandle) {
-    crate::focus::store_history_target();
+pub fn show_history(app: &AppHandle) -> tauri::Result<WebviewWindow<Wry>> {
+    let history_visible = app
+        .get_webview_window("history")
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false);
+    if !history_visible {
+        crate::focus::store_history_target(app);
+    }
     if let Some(window) = app.get_webview_window("history") {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
+        window.unminimize()?;
+        window.show()?;
+        window.set_focus()?;
         let _ = window.emit("history://opened", ());
-    } else if let Ok(window) = tauri::WebviewWindowBuilder::new(
-        app,
-        "history",
-        tauri::WebviewUrl::App("history.html".into()),
-    )
-    .title("Voice to Prompt History")
-    .inner_size(440.0, 600.0)
-    .min_inner_size(360.0, 420.0)
-    .resizable(true)
-    .decorations(false)
-    .transparent(true)
-    .always_on_top(true)
-    .center()
-    .build()
-    {
+        Ok(window)
+    } else {
+        let window = tauri::WebviewWindowBuilder::new(
+            app,
+            "history",
+            tauri::WebviewUrl::App("history.html".into()),
+        )
+        .title("Voice to Prompt History")
+        .inner_size(440.0, 600.0)
+        .min_inner_size(360.0, 420.0)
+        .resizable(true)
+        .decorations(false)
+        .transparent(true)
+        .shadow(false)
+        .always_on_top(true)
+        .center()
+        .build()?;
         let _ = window.emit("history://opened", ());
+        Ok(window)
     }
 }
 
@@ -153,7 +172,7 @@ pub fn toggle_history(app: &AppHandle) {
             return;
         }
     }
-    show_history(app);
+    let _ = show_history(app);
 }
 
 pub fn install(app: &App<Wry>, settings: &AppSettings) -> tauri::Result<()> {
@@ -164,13 +183,17 @@ pub fn install(app: &App<Wry>, settings: &AppSettings) -> tauri::Result<()> {
         .tooltip("VoiceToPrompt")
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::DoubleClick { .. } = event {
-                show_settings(tray.app_handle());
+                let _ = show_settings(tray.app_handle());
             }
         })
         .on_menu_event(|app, event| match event.id.as_ref() {
             "toggle" => crate::overlay::toggle(app.clone()),
-            "settings" => show_settings(app),
-            "history" => show_history(app),
+            "settings" => {
+                let _ = show_settings(app);
+            }
+            "history" => {
+                let _ = show_history(app);
+            }
             "quit" => app.exit(0),
             _ => {}
         })

@@ -275,10 +275,8 @@ pub fn toggle(app: AppHandle) {
                     Ok(id) => id,
                     Err(_) => return,
                 };
+                let _ = crate::session::begin_recording(app.clone(), session_id).await;
                 show_without_activation(&app, session_id);
-                if app.state::<Arc<SettingsStore>>().get().start_recording_on_open {
-                    let _ = crate::session::begin_recording(app, session_id).await;
-                }
             }
         }
     });
@@ -751,7 +749,7 @@ impl MicTestManager {
 }
 ```
 
-`mic_test_start` starts `recorder::start_recording(device_name.as_deref())`, stores the handle, and emits `MicLevelPayload { level }` to the Settings window at 100–250 ms intervals. `mic_test_stop` stops/discards samples and emits level `0`. It must never call WAV encoding, Gemini, history, clipboard, or insertion.
+`mic_test_start` starts `recorder::start_recording(device_name.as_deref())`, stores the handle, and emits `MicLevelPayload { level }` to the Settings window every 150 ms. `mic_test_stop` stops/discards samples and emits level `0`. It must never call WAV encoding, Gemini, history, clipboard, or insertion.
 
 - [ ] **Step 4: Register commands/state and mirror the event contract in TypeScript**
 
@@ -1001,7 +999,9 @@ When processing begins, start one local monotonic timer. At 2.5s show the explan
   startRecording,
   stopRecording,
   cancel,
-  retry,
+  reprocessAudio,
+  retryInsertion,
+  startNewRecording,
   hide,
   openSettings,
   copyText,
@@ -1081,7 +1081,7 @@ const next = target > current
 - `ProcessingState`: 3–5 bar calm processing indicator; `<2.5s` title only, `2.5–8s` helper, `>8s` helper + real Cancel.
 - `SuccessState`: inserted success is compact “Inserted/Đã chèn” plus optional one-line preview; copied-only has up to ~5 lines and recovery buttons; neither inserted nor copied routes to error rendering.
 - `ErrorState`: map `ErrorCode` to localized title/description/primary action and a collapsible technical detail.
-- `Idle`: only when auto-record is disabled; “Ready to record/Sẵn sàng ghi âm” + Start.
+- `Idle/recovery`: “Ready to record/Sẵn sàng ghi âm” + Start when the overlay is idle or has been reset; normal recording begins through the configured Toggle or Hold-to-talk shortcut.
 
 - [ ] **Step 4: Build `OverlayShell` with near-opaque tonal surfaces and purposeful transitions**
 
@@ -1152,7 +1152,6 @@ const base: AppSettings = {
   paste_automatically: true,
   device_name: null,
   show_history: true,
-  start_recording_on_open: true,
   ui_locale: "system",
 };
 
@@ -1240,7 +1239,7 @@ Assert that unmounting an active mic test calls `micTestStop()`.
 
 - [ ] **Step 2: Build General as a readiness/status screen**
 
-Show four concise statuses: Gemini connection, selected microphone, rendered shortcut keycaps, auto-insert on/off. Below: immediate autosave for “start recording immediately”, UI language selector (`system`, `vi`, `en`), and a small “Try VoiceToPrompt” action. Keep raw model IDs off this page.
+Show four concise statuses: Gemini connection, selected microphone, rendered shortcut keycaps, auto-insert on/off. Below: UI language selector (`system`, `vi`, `en`), and a small “Try VoiceToPrompt” action. Keep raw model IDs off this page; configure Toggle or Hold-to-talk under Shortcut.
 
 - [ ] **Step 3: Build Voice with device refresh and live test**
 

@@ -2,6 +2,7 @@ import { memo } from "react";
 import { Play, Send, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { t, type UiLocale } from "@/lib/i18n";
+import type { RecordingHealth, RecordingWarning } from "@/lib/types";
 import { VoiceMeter } from "./VoiceMeter";
 
 function formatElapsed(seconds: number) {
@@ -23,6 +24,8 @@ export function RecordingState({
   processShortcut,
   cancelShortcut,
   paused,
+  health = "healthy",
+  warning = null,
   locale,
   onTogglePause,
   onProcess,
@@ -34,23 +37,35 @@ export function RecordingState({
   processShortcut: string;
   cancelShortcut: string;
   paused: boolean;
+  health?: RecordingHealth;
+  warning?: RecordingWarning | null;
   locale: UiLocale;
   onTogglePause: () => void;
   onProcess: () => void;
   onCancel: () => void;
 }) {
   const pauseLabel = t(locale, paused ? "overlay.resume" : "overlay.pause");
+  const healthMessage = warning
+    ? t(locale, `overlay.warning.${warning}`)
+    : health === "silent"
+      ? t(locale, "overlay.micSilent")
+      : health === "warning"
+        ? t(locale, "overlay.micWarning")
+        : null;
+  const announceOnlyHealthMessage = warning === "default_microphone" ? healthMessage : null;
+  const visibleHealthMessage = warning === "default_microphone" ? null : healthMessage;
 
   return (
     <div className="flex h-full items-center gap-2 px-3 select-none">
       <button
         type="button"
-        className={`group relative flex size-7 shrink-0 items-center justify-center rounded-full transition-all active:scale-90 ${
+        className={`group relative flex size-7 shrink-0 items-center justify-center rounded-full transition-[background-color,border-color,color,box-shadow,transform] active:scale-90 ${
           paused
             ? "border border-zinc-700 bg-zinc-800 text-zinc-200 hover:bg-zinc-700"
             : "border border-red-500/40 bg-red-500/15 hover:bg-red-500/25 shadow-[0_0_10px_rgba(239,68,68,0.25)]"
         }`}
         aria-label={pauseLabel}
+        aria-pressed={paused}
         title={`${pauseLabel} · ${shortcut}`}
         onClick={onTogglePause}
       >
@@ -62,7 +77,16 @@ export function RecordingState({
       </button>
 
       <div className="flex min-w-0 flex-1 items-center gap-2">
-        {paused ? (
+        {announceOnlyHealthMessage ? (
+          <span role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+            {announceOnlyHealthMessage}
+          </span>
+        ) : null}
+        {visibleHealthMessage ? (
+          <span role="status" aria-live="polite" aria-atomic="true" className="min-w-0 truncate text-[10px] text-amber-300">
+            {visibleHealthMessage}
+          </span>
+        ) : paused ? (
           <span className="text-xs font-medium text-zinc-400">
             {t(locale, "overlay.paused")}
           </span>
@@ -76,9 +100,9 @@ export function RecordingState({
         <Button
           size="icon"
           variant="ghost"
-          className="size-7 rounded-full bg-zinc-100 text-zinc-950 hover:bg-zinc-200 shadow-sm transition-all active:scale-90"
+          className="size-7 rounded-full bg-zinc-100 text-zinc-950 hover:bg-zinc-200 shadow-sm transition-[background-color,color,box-shadow,transform] active:scale-90"
           aria-label={t(locale, "overlay.process")}
-          title={`${t(locale, "overlay.process")} · ${processShortcut}`}
+          title={processShortcut ? `${t(locale, "overlay.process")} · ${processShortcut}` : t(locale, "overlay.process")}
           onClick={onProcess}
         >
           <Send className="size-3.5" />
@@ -86,7 +110,7 @@ export function RecordingState({
         <Button
           size="icon"
           variant="ghost"
-          className="size-7 rounded-full text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/80 transition-all active:scale-90"
+          className="size-7 rounded-full text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/80 transition-[background-color,color,box-shadow,transform] active:scale-90"
           aria-label={t(locale, "overlay.cancel")}
           title={`${t(locale, "overlay.cancel")} · ${cancelShortcut}`}
           onClick={onCancel}

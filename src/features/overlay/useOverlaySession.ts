@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
-import { onOverlayDismiss, onOverlayState, overlayApi } from "@/lib/overlay";
+import {
+  frontendErrorFromRejection,
+  onOverlayDismiss,
+  onOverlayState,
+  overlayApi,
+} from "@/lib/overlay";
 import type { OverlayViewModel } from "@/lib/types";
 import { initialOverlayModel, reduceOverlayAction } from "./overlayReducer";
 
@@ -17,25 +22,68 @@ export function useOverlaySession() {
   );
   const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const commandRefs = useRef<Partial<Record<PendingCommand, { sessionId: number; request: Promise<void> }>>>({});
+  const recoveryRef = useRef<{ sessionId: number; request: Promise<void> } | null>(null);
   const processingSessionRef = useRef<number | null>(null);
   const cancelledSessionRef = useRef<number | null>(null);
+  const latestLiveSessionRef = useRef<number | null>(null);
   const modelRef = useRef(baseModel);
   modelRef.current = baseModel;
+
+  const reportCommandError = useCallback((sessionId: number, error: unknown) => {
+    if (modelRef.current.sessionId !== sessionId) return;
+    dispatch({
+      type: "overlay_event",
+      event: {
+        session_id: Math.max(1, sessionId),
+        phase: "error",
+        error: frontendErrorFromRejection(error),
+      },
+    });
+  }, []);
 
   useEffect(() => {
     let unlistenState: (() => void) | undefined;
     let unlistenDismiss: (() => void) | undefined;
     let disposed = false;
 
-    void onOverlayState((event) => dispatch({ type: "overlay_event", event })).then((cleanup) => {
-      if (disposed) cleanup();
-      else unlistenState = cleanup;
-    });
-    void onOverlayDismiss((event) => {
-      dispatch({ type: "dismiss_start", sessionId: event.session_id });
-    }).then((cleanup) => {
-      if (disposed) cleanup();
-      else unlistenDismiss = cleanup;
+    void (async () => {
+      const stateSubscription = onOverlayState((event) => {
+        latestLiveSessionRef.current = event.session_id;
+        dispatch({ type: "overlay_event", event });
+      });
+      const dismissSubscription = onOverlayDismiss((event) => {
+        dispatch({ type: "dismiss_start", sessionId: event.session_id });
+      });
+      const [stateCleanup, dismissCleanup] = await Promise.all([
+        stateSubscription,
+        dismissSubscription,
+      ]);
+      if (disposed) {
+        stateCleanup();
+        dismissCleanup();
+        return;
+      }
+      unlistenState = stateCleanup;
+      unlistenDismiss = dismissCleanup;
+
+      const snapshot = await overlayApi.getSnapshot();
+      if (
+        !disposed
+        && snapshot
+        && latestLiveSessionRef.current !== snapshot.session_id
+      ) {
+        dispatch({ type: "overlay_event", event: snapshot });
+      }
+    })().catch((error) => {
+      if (disposed) return;
+      dispatch({
+        type: "overlay_event",
+        event: {
+          session_id: Math.max(1, modelRef.current.sessionId),
+          phase: "error",
+          error: frontendErrorFromRejection(error),
+        },
+      });
     });
 
     return () => {
@@ -96,8 +144,12 @@ export function useOverlaySession() {
     () => ({
       ...baseModel,
       processingElapsedMs,
-      showLongProcessingHint: isProcessing && processingElapsedMs >= PROCESSING_HINT_MS,
-      showCancel: isProcessing && processingElapsedMs >= PROCESSING_CANCEL_MS,
+      showLongProcessingHint:
+        isProcessing && (processingElapsedMs >= PROCESSING_HINT_MS ||
+          (baseModel.state.phase === "processing" && baseModel.state.status === "long_running")),
+      showCancel:
+        isProcessing && (processingElapsedMs >= PROCESSING_CANCEL_MS ||
+          (baseModel.state.phase === "processing" && baseModel.state.status === "long_running")),
     }),
     [baseModel, isProcessing, processingElapsedMs],
   );
@@ -107,7 +159,9 @@ export function useOverlaySession() {
     const pending = commandRefs.current[key];
     if (pending?.sessionId === sessionId) return pending.request;
 
-    const request = command();
+    const request = command().catch((error) => {
+      reportCommandError(sessionId, error);
+    });
     commandRefs.current[key] = { sessionId, request };
     void request.then(
       () => {
@@ -118,9 +172,14 @@ export function useOverlaySession() {
       },
     );
     return request;
-  }, []);
+  }, [reportCommandError]);
 
-  const startRecording = useCallback(() => overlayApi.startRecording(), []);
+  const startRecording = useCallback(() => {
+    const sessionId = modelRef.current.sessionId;
+    return Promise.resolve(overlayApi.startRecording()).catch((error) => {
+      reportCommandError(sessionId, error);
+    });
+  }, [reportCommandError]);
   const togglePause = useCallback(
     () => runOnce("pause", overlayApi.togglePause),
     [runOnce],
@@ -141,7 +200,42 @@ export function useOverlaySession() {
     dispatch({ type: "dismiss_start", sessionId });
     return cancellation;
   }, [runOnce]);
-  const retry = useCallback(() => overlayApi.retry(), []);
+  const runRecoveryOnce = useCallback((command: () => Promise<void>) => {
+    const sessionId = modelRef.current.sessionId;
+    if (recoveryRef.current?.sessionId === sessionId) {
+      return recoveryRef.current.request;
+    }
+
+    const request = command().catch((error) => {
+      reportCommandError(sessionId, error);
+    });
+    recoveryRef.current = { sessionId, request };
+    void request.then(
+      () => {
+        if (recoveryRef.current?.request === request) recoveryRef.current = null;
+      },
+      () => {
+        if (recoveryRef.current?.request === request) recoveryRef.current = null;
+      },
+    );
+    return request;
+  }, [reportCommandError]);
+  const reprocessAudio = useCallback(
+    () => runRecoveryOnce(overlayApi.reprocessAudio),
+    [runRecoveryOnce],
+  );
+  const retryInsertion = useCallback(
+    (text?: string) => runRecoveryOnce(() => overlayApi.retryInsertion(text)),
+    [runRecoveryOnce],
+  );
+  const copyLastResult = useCallback(
+    () => runRecoveryOnce(overlayApi.copyLastResult),
+    [runRecoveryOnce],
+  );
+  const startNewRecording = useCallback(
+    () => runRecoveryOnce(overlayApi.startNewRecording),
+    [runRecoveryOnce],
+  );
   const hide = useCallback(() => {
     dispatch({ type: "dismiss_start", sessionId: modelRef.current.sessionId });
   }, []);
@@ -159,8 +253,22 @@ export function useOverlaySession() {
       }
     }
   }, []);
-  const openSettings = useCallback(() => overlayApi.openSettings(), []);
-  const copyText = useCallback((text: string) => overlayApi.copyText(text), []);
+  const openSettings = useCallback((section?: string) => {
+    const sessionId = modelRef.current.sessionId;
+    return Promise.resolve(overlayApi.openSettings(section)).catch((error) => {
+      reportCommandError(sessionId, error);
+    });
+  }, [reportCommandError]);
+  const copyText = useCallback((text: string) => {
+    const sessionId = modelRef.current.sessionId;
+    return overlayApi.copyText(text).catch((error) => {
+      reportCommandError(sessionId, error);
+    });
+  }, [reportCommandError]);
+  const insertResult = useCallback(
+    (text: string) => runRecoveryOnce(() => overlayApi.insertResult(text)),
+    [runRecoveryOnce],
+  );
 
   return {
     model,
@@ -168,10 +276,14 @@ export function useOverlaySession() {
     togglePause,
     processRecording,
     cancel,
-    retry,
+    reprocessAudio,
+    retryInsertion,
+    copyLastResult,
+    startNewRecording,
     hide,
     completeExit,
     openSettings,
     copyText,
+    insertResult,
   };
 }

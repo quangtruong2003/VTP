@@ -13,6 +13,7 @@ export interface AppSettings {
   max_output_tokens: number;
   language: string;
   shortcut: string;
+  shortcut_mode: "toggle" | "hold";
   process_shortcut: string;
   cancel_shortcut: string;
   history_shortcut?: string;
@@ -21,10 +22,22 @@ export interface AppSettings {
   paste_automatically: boolean;
   device_name: string | null;
   show_history: boolean;
-  start_recording_on_open: boolean;
   ui_locale: "system" | "vi" | "en";
   fallback_models?: string[];
+  prompt_profile_id?: string;
+  prompt_profiles?: PromptProfile[];
   start_with_windows?: boolean;
+}
+
+export interface PromptProfile {
+  id: string;
+  name: string;
+  prompt: string;
+}
+
+export interface OverlayProfile {
+  id: string;
+  name: string;
 }
 
 export interface PublicSettings extends AppSettings {
@@ -81,13 +94,24 @@ export interface FrontendError {
   detail?: string | null;
 }
 
+export type OutputOutcome = "inserted" | "copied" | "preview";
+
+export type RecordingHealth = "healthy" | "silent" | "warning";
+export type RecordingWarning =
+  | "default_microphone"
+  | "selected_microphone_unavailable"
+  | "audio_queue_overflow"
+  | "long_recording";
+export type ProcessingStatus = "encoding" | "requesting" | "fallback" | "long_running";
+
 export type OverlayState =
   | { phase: "idle" }
-  | { phase: "recording"; elapsed_ms: number; level: number }
+  | { phase: "opening"; device_name: string | null }
+  | { phase: "recording"; elapsed_ms: number; level: number; health?: RecordingHealth; warning?: RecordingWarning | null }
   | { phase: "paused"; elapsed_ms: number }
   | { phase: "uploading" }
-  | { phase: "processing" }
-  | { phase: "success"; text: string; pasted: boolean; copied: boolean }
+  | { phase: "processing"; status?: ProcessingStatus; model?: string | null; attempt?: number; total_attempts?: number }
+  | { phase: "success"; text: string; pasted: boolean; copied: boolean; output: OutputOutcome; profile?: OverlayProfile | null }
   | { phase: "error"; error: FrontendError }
   | { phase: "info"; message: string };
 
@@ -109,28 +133,12 @@ export interface OverlayViewModel {
   autoDismissEligible: boolean;
 }
 
-export type ToastMessage =
-  | { kind: "ok"; text: string }
-  | { kind: "error"; text: string };
-
-/** Overlay-specific commands (window label "overlay"). */
-export interface OverlayApi {
-  overlayStopRecording: () => Promise<boolean>;
-  overlayCancel: () => Promise<void>;
-  overlayCopyResult: () => Promise<void>;
-  overlayCopyInsertResult: () => Promise<void>;
-  overlayRetry: () => Promise<void>;
-}
-
 /** Event names emitted by the Rust backend. */
 export const RUST_EVENTS = {
   overlayState: "overlay://state",
   overlayDismiss: "overlay://dismiss",
-  overlayToast: "overlay://toast",
   settingsSaved: "settings://saved",
   settingsMicLevel: "settings://mic-level",
-  settingsToast: "settings://toast",
   historyChanged: "history://changed",
-  shortcutChanged: "shortcut://changed",
   settingsSection: "app://settings-section",
 } as const;

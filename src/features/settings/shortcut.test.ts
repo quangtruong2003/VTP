@@ -25,13 +25,13 @@ describe("shortcut capture helpers", () => {
     ).toEqual({ ok: false, reason: "missing_modifier" });
   });
 
-  it("allows unmodified Enter and Escape for session-only action shortcuts", () => {
+  it("rejects unmodified Enter but allows Escape for session-only action shortcuts", () => {
     expect(
       validateCandidate(
         { ctrl: false, shift: false, alt: false, meta: false, key: "Enter" },
         { allowUnmodified: true },
       ),
-    ).toEqual({ ok: true });
+    ).toEqual({ ok: false, reason: "unsupported" });
     expect(
       validateCandidate(
         { ctrl: false, shift: false, alt: false, meta: false, key: "Escape" },

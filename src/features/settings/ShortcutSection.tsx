@@ -37,6 +37,7 @@ export function ShortcutSection({
   onSetHistoryShortcut,
   onSetSettingsShortcut,
   onCommitted,
+  onUpdateImmediate,
 }: {
   settings: AppSettings;
   platformInfo: PlatformInfo;
@@ -47,6 +48,7 @@ export function ShortcutSection({
   onSetHistoryShortcut: ShortcutSetter;
   onSetSettingsShortcut: ShortcutSetter;
   onCommitted: (snapshot: PublicSettings) => void;
+  onUpdateImmediate: (patch: Partial<AppSettings>) => void;
 }) {
   const [displayed, setDisplayed] = useState({
     record: settings.shortcut,
@@ -111,6 +113,11 @@ export function ShortcutSection({
       return;
     }
 
+    if (event.key === "Enter" && !event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey) {
+      setError("unsupported");
+      return;
+    }
+
     const candidate = candidateFromKeyboardEvent(event.nativeEvent);
     const validation = validateCandidate(candidate, {
       allowUnmodified: !isGlobalShortcut(capturing),
@@ -139,6 +146,27 @@ export function ShortcutSection({
     } catch {
       setError("conflict");
       setCapturing(null);
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const clearShortcut = async (kind: ShortcutKind) => {
+    if (pending || kind !== "process") return;
+    setPending(true);
+    setError(null);
+    try {
+      const snapshot = await setterFor(kind)("");
+      setDisplayed({
+        record: snapshot.shortcut,
+        process: snapshot.process_shortcut,
+        cancel: snapshot.cancel_shortcut,
+        history: snapshot.history_shortcut ?? "Alt+V",
+        settings: snapshot.settings_shortcut ?? "Alt+S",
+      });
+      onCommitted(snapshot);
+    } catch {
+      setError("conflict");
     } finally {
       setPending(false);
     }
@@ -188,6 +216,20 @@ export function ShortcutSection({
         title={t(locale, "settings.shortcut")}
         description={t(locale, "settings.shortcutDesc")}
       >
+        <div className="mb-3 grid grid-cols-2 gap-1 rounded-lg bg-secondary/50 p-1" role="group" aria-label={t(locale, "settings.shortcutMode")}>
+          {(["toggle", "hold"] as const).map((mode) => (
+            <Button
+              key={mode}
+              type="button"
+              size="sm"
+              variant={settings.shortcut_mode === mode ? "secondary" : "ghost"}
+              aria-pressed={settings.shortcut_mode === mode}
+              onClick={() => onUpdateImmediate({ shortcut_mode: mode })}
+            >
+              {t(locale, mode === "toggle" ? "settings.shortcutModeToggle" : "settings.shortcutModeHold")}
+            </Button>
+          ))}
+        </div>
         <div className="divide-y divide-border/70">
           {rows.map((row) => (
             <div key={row.kind} className="py-2.5 first:pt-0 last:pb-0">
@@ -204,6 +246,19 @@ export function ShortcutSection({
                       <ShortcutKey key={`${row.kind}-${label}-${index}`} label={label === "Escape" ? "Esc" : label} />
                     ))}
                   </div>
+                  {row.kind === "process" && row.value ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 px-2 text-xs"
+                      aria-label={`${t(locale, "settings.clearShortcut")} — ${row.label}`}
+                      onClick={() => void clearShortcut(row.kind)}
+                      disabled={pending}
+                    >
+                      {t(locale, "settings.clearShortcut")}
+                    </Button>
+                  ) : null}
                   <Button
                     type="button"
                     size="sm"
@@ -211,6 +266,7 @@ export function ShortcutSection({
                     className="h-7 px-2.5 text-xs"
                     aria-label={`${t(locale, "settings.changeShortcut")} — ${row.label}`}
                     onClick={() => startCapture(row.kind)}
+                    disabled={pending}
                   >
                     {t(locale, "settings.changeShortcut")}
                   </Button>
@@ -235,7 +291,7 @@ export function ShortcutSection({
                           ? platformInfo.os === "macos"
                             ? "⌘ / ⌥ / ⇧ + key"
                             : "Ctrl / Alt / Shift + key"
-                          : "Enter / Esc / key combination"}
+                          : "Esc / key combination"}
                       </p>
                     </div>
                   </div>

@@ -12,7 +12,8 @@ const settings: AppSettings = {
   max_output_tokens: 2048,
   language: "auto",
   shortcut: "Ctrl+Shift+Space",
-  process_shortcut: "Enter",
+  shortcut_mode: "toggle",
+  process_shortcut: "",
   cancel_shortcut: "Escape",
   history_shortcut: "Alt+V",
   settings_shortcut: "Alt+S",
@@ -20,7 +21,6 @@ const settings: AppSettings = {
   paste_automatically: true,
   device_name: null,
   show_history: true,
-  start_recording_on_open: true,
   ui_locale: "en",
 };
 
@@ -31,12 +31,14 @@ function returned(patch: Partial<AppSettings> = {}): PublicSettings {
 }
 
 function renderSection(overrides: {
+  settings?: Partial<AppSettings>;
   setRecord?: (shortcut: string) => Promise<PublicSettings>;
   setProcess?: (shortcut: string) => Promise<PublicSettings>;
   setCancel?: (shortcut: string) => Promise<PublicSettings>;
   setHistory?: (shortcut: string) => Promise<PublicSettings>;
   setSettings?: (shortcut: string) => Promise<PublicSettings>;
   onCommitted?: (snapshot: PublicSettings) => void;
+  onUpdateImmediate?: (patch: Partial<AppSettings>) => void;
 } = {}) {
   const setRecord = overrides.setRecord ?? vi.fn(async (shortcut: string) => returned({ shortcut }));
   const setProcess = overrides.setProcess ?? vi.fn(async (shortcut: string) => returned({ process_shortcut: shortcut }));
@@ -45,7 +47,7 @@ function renderSection(overrides: {
   const setSettings = overrides.setSettings ?? vi.fn(async (shortcut: string) => returned({ settings_shortcut: shortcut }));
   render(
     <ShortcutSection
-      settings={settings}
+      settings={{ ...settings, ...overrides.settings }}
       platformInfo={platform}
       locale="en"
       onSetShortcut={setRecord}
@@ -54,16 +56,25 @@ function renderSection(overrides: {
       onSetHistoryShortcut={setHistory}
       onSetSettingsShortcut={setSettings}
       onCommitted={overrides.onCommitted ?? (() => {})}
+      onUpdateImmediate={overrides.onUpdateImmediate ?? (() => {})}
     />,
   );
   return { setRecord, setProcess, setCancel, setHistory, setSettings };
 }
 
 describe("ShortcutSection", () => {
+  it("switches the main shortcut to hold-to-talk mode", async () => {
+    const onUpdateImmediate = vi.fn();
+    renderSection({ onUpdateImmediate });
+
+    await userEvent.click(screen.getByRole("button", { name: "Hold to talk" }));
+
+    expect(onUpdateImmediate).toHaveBeenCalledWith({ shortcut_mode: "hold" });
+  });
   it("Escape cancels record-shortcut capture without committing", async () => {
     const { setRecord } = renderSection();
 
-    await userEvent.click(screen.getByRole("button", { name: /change shortcut.*record \/ pause/i }));
+    await userEvent.click(screen.getByRole("button", { name: /change shortcut.*start \/ finish recording/i }));
     expect(screen.getByText("Press a new key combination…")).toBeInTheDocument();
     await userEvent.keyboard("{Escape}");
 
@@ -77,7 +88,7 @@ describe("ShortcutSection", () => {
     const setRecord = vi.fn(async () => returned({ shortcut: "Ctrl+Alt+K" }));
     renderSection({ setRecord, onCommitted });
 
-    await userEvent.click(screen.getByRole("button", { name: /change shortcut.*record \/ pause/i }));
+    await userEvent.click(screen.getByRole("button", { name: /change shortcut.*start \/ finish recording/i }));
     await userEvent.keyboard("{Control>}{Alt>}k{/Alt}{/Control}");
 
     expect(setRecord).toHaveBeenCalledWith("Ctrl+Alt+K");
@@ -85,18 +96,36 @@ describe("ShortcutSection", () => {
     expect(onCommitted).toHaveBeenCalledWith(expect.objectContaining({ shortcut: "Ctrl+Alt+K" }));
   });
 
-  it("allows bare Enter and Escape for session action shortcuts", async () => {
+  it("does not configure bare Enter as a global session shortcut", async () => {
     const setProcess = vi.fn(async () => returned({ process_shortcut: "Enter" }));
-    const setCancel = vi.fn(async () => returned({ cancel_shortcut: "Escape" }));
-    renderSection({ setProcess, setCancel });
+    renderSection({ setProcess });
 
     await userEvent.click(screen.getByRole("button", { name: /change shortcut.*process recording/i }));
     await userEvent.keyboard("{Enter}");
-    expect(setProcess).toHaveBeenCalledWith("Enter");
+
+    expect(setProcess).not.toHaveBeenCalled();
+    expect(await screen.findByText("That key combination isn't supported.")).toBeInTheDocument();
+  });
+
+  it("allows bare Escape for the cancel session shortcut", async () => {
+    const setCancel = vi.fn(async () => returned({ cancel_shortcut: "Escape" }));
+    renderSection({ setCancel });
 
     await userEvent.click(screen.getByRole("button", { name: /change shortcut.*cancel recording/i }));
     await userEvent.keyboard("{Escape}");
     expect(setCancel).toHaveBeenCalledWith("Escape");
+  });
+
+  it("clears the optional process shortcut", async () => {
+    const setProcess = vi.fn(async () => returned({ process_shortcut: "" }));
+    renderSection({
+      settings: { process_shortcut: "Ctrl+Enter" },
+      setProcess,
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: /clear.*process recording/i }));
+
+    expect(setProcess).toHaveBeenCalledWith("");
   });
 
   it("keeps the previous record shortcut visible when registration fails", async () => {
@@ -105,7 +134,7 @@ describe("ShortcutSection", () => {
     });
     renderSection({ setRecord });
 
-    await userEvent.click(screen.getByRole("button", { name: /change shortcut.*record \/ pause/i }));
+    await userEvent.click(screen.getByRole("button", { name: /change shortcut.*start \/ finish recording/i }));
     await userEvent.keyboard("{Control>}{Alt>}k{/Alt}{/Control}");
 
     expect(await screen.findByText("Shortcut unavailable")).toBeInTheDocument();

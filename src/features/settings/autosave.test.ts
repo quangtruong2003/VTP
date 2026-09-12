@@ -10,13 +10,13 @@ const base: AppSettings = {
   max_output_tokens: 2048,
   language: "auto",
   shortcut: "CmdOrCtrl+Shift+Space",
+  shortcut_mode: "toggle",
   process_shortcut: "Enter",
   cancel_shortcut: "Escape",
   copy_to_clipboard: true,
   paste_automatically: true,
   device_name: null,
   show_history: true,
-  start_recording_on_open: true,
   ui_locale: "system",
 };
 

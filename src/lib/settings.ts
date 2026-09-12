@@ -33,7 +33,6 @@ export const settingsApi = {
   micTestStart: (deviceName: string | null) =>
     invoke<void>("mic_test_start", { deviceName }),
   micTestStop: () => invoke<void>("mic_test_stop"),
-  testTextInsertion: () => invoke<void>("test_text_insertion"),
   historyList: () => invoke<HistoryEntry[]>("history_list"),
   historyCopy: (id: string) => invoke<void>("history_copy", { id }),
   historyDelete: (id: string) => invoke<void>("history_delete", { id }),
@@ -50,12 +49,6 @@ export async function onSettingsSaved(cb: (s: PublicSettings) => void) {
 export async function onMicLevel(cb: (payload: MicLevelPayload) => void) {
   return listen<MicLevelPayload>(RUST_EVENTS.settingsMicLevel, (e) => cb(e.payload));
 }
-export async function onHistoryChanged(cb: () => void) {
-  return listen(RUST_EVENTS.historyChanged, () => cb());
-}
 export async function onSettingsSection(cb: (section: string) => void) {
   return listen<string>(RUST_EVENTS.settingsSection, (e) => cb(e.payload));
-}
-export async function onSettingsToast(cb: (s: { kind: string; text: string }) => void) {
-  return listen<{ kind: string; text: string }>(RUST_EVENTS.settingsToast, (e) => cb(e.payload));
 }

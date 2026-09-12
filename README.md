@@ -1,7 +1,7 @@
 # Voice to Prompt
 
-A fast, lightweight desktop AI voice assistant. Press **Ctrl+Space** anywhere,
-speak, and the response from Google Gemini is typed directly at your cursor in
+A fast, lightweight desktop AI voice assistant. Press **CmdOrCtrl+Shift+Space** anywhere,
+speak, press it again to finish, and the response from Google Gemini is typed directly at your cursor in
 whatever app you were using — plus copied to the clipboard.
 
 Built with **Rust + Tauri 2** (backend) and **React + TypeScript + shadcn/ui**
@@ -9,13 +9,13 @@ Built with **Rust + Tauri 2** (backend) and **React + TypeScript + shadcn/ui**
 
 ## Features
 
-- Global shortcut (default `Ctrl+Space`, configurable) opens a compact,
+- Global shortcut (default `CmdOrCtrl+Shift+Space`, configurable) opens a compact,
   always-on-top overlay **without stealing focus** (Windows:
   `SWP_SHOWWINDOW | SWP_NOACTIVATE`)
 - Instant recording with live elapsed-time + level meter, driven from Rust at
-  4 Hz (no JS polling)
-- 16 kHz mono WAV capture (the model downsamples anyway — smallest payload,
-  fastest upload)
+  10 Hz (100 ms events; no JS polling; the frontend smooths between updates)
+- Native microphone capture on a dedicated thread, followed at encode time by
+  downmixing/resampling to 16-bit PCM WAV at 16 kHz mono
 - Gemini `generateContent` with inline base64 audio — one round trip, no
   separate transcription step
 - Response is **typed at the caret** of the previously focused app, with an
@@ -29,7 +29,7 @@ Built with **Rust + Tauri 2** (backend) and **React + TypeScript + shadcn/ui**
   temperature, max tokens, response language, mic device, shortcut
   configuration
 - Local history (JSONL, audio is never stored), tray menu, first-run
-  onboarding
+  onboarding, and three native windows: Overlay, Settings, and History
 
 ## Prerequisites
 
@@ -42,7 +42,7 @@ Built with **Rust + Tauri 2** (backend) and **React + TypeScript + shadcn/ui**
 
 ```bash
 npm install
-npm run tauri dev     # runs vite + cargo debug build, opens both windows
+npm run tauri dev     # runs Vite + Cargo; Tauri owns Overlay, Settings, and History
 ```
 
 > Note: `tauri dev` uses the npm-delivered `@tauri-apps/cli`. The
@@ -62,13 +62,15 @@ art via `npm run tauri icon path/to/icon.png` before shipping.
 1. The Settings window opens automatically (no API key detected).
 2. Paste your Gemini API key — it goes straight into the OS keyring.
 3. Click **Fetch models**, pick a model (default `gemini-2.0-flash`).
-4. Press `Ctrl+Space` anywhere and speak.
+4. Press `CmdOrCtrl+Shift+Space` anywhere, speak, then press it again to finish in Toggle mode. Settings can change the main shortcut to Hold-to-talk, where releasing it finishes the turn.
 
 ## Keyboard map (overlay)
 
 | Key | Action |
 |---|---|
-| `Space` / `Enter` | finish recording → transcribe |
+| Main global shortcut — Toggle | press once to start recording; press again to finish |
+| Main global shortcut — Hold | press and hold to record; release to finish |
+| Done button | finish recording → process |
 | `Esc` | cancel and dismiss |
 | `Ctrl/Cmd+C` (on result) | copy the result again |
 
@@ -80,7 +82,8 @@ art via `npm run tauri icon path/to/icon.png` before shipping.
 - All network calls go to `generativelanguage.googleapis.com`; outgoing URLs
   are validated against a deny-list of loopback/private/link-local hosts.
 - Clipboard access and global shortcuts are gated by Tauri capability ACLs
-  (`src-tauri/capabilities/default.json`).
+  (`src-tauri/capabilities/default.json`), which currently applies one shared
+  permission set to the Overlay, Settings, and History windows.
 
 ## OS-specific notes
 
@@ -91,10 +94,10 @@ art via `npm run tauri icon path/to/icon.png` before shipping.
 - **macOS**: the first microphone use triggers a TCC permission prompt
   (requires running as a bundled `.app`). Synthetic keyboard input requires
   the **Accessibility** permission (System Settings → Privacy & Security →
-  Accessibility). On macOS use `Cmd+Space`-free shortcuts to avoid conflict
-  with Spotlight — the default `CmdOrCtrl+Space` resolves to `Ctrl+Space`
-  on Windows and `Cmd+Space` on macOS, which **conflicts with Spotlight**;
-  change it in Settings (e.g. `Alt+Space` or `Cmd+Shift+V`).
+  Accessibility). On macOS avoid `Cmd+Space` because it conflicts with
+  Spotlight. The default `CmdOrCtrl+Shift+Space` resolves to
+  `Ctrl+Shift+Space` on Windows and `Cmd+Shift+Space` on macOS; change it in
+  Settings if another application already uses it.
 
 ## Project layout
 

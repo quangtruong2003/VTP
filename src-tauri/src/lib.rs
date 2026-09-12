@@ -14,8 +14,6 @@ mod types;
 
 use std::sync::Arc;
 
-use tauri::Manager;
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let settings_store = Arc::new(settings::SettingsStore::load().expect("settings store"));
@@ -26,10 +24,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|_app, _args, _cwd| {
             // second launch attempt: surface the settings window
-            if let Some(w) = _app.get_webview_window("settings") {
-                let _ = w.show();
-                let _ = w.set_focus();
-            }
+            let _ = tray::show_settings(_app);
         }))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -44,11 +39,7 @@ pub fn run() {
         .manage(history_store.clone())
         .manage(session_manager.clone())
         .manage(mic_test_manager.clone())
-        .manage({
-            let client = Arc::new(gemini::GeminiClient::new().expect("http client"));
-            client.prewarm();
-            client
-        })
+        .manage(Arc::new(gemini::GeminiClient::new().expect("http client")))
         .invoke_handler(tauri::generate_handler![
             commands::get_public_settings,
             commands::save_settings,
@@ -69,8 +60,13 @@ pub fn run() {
             commands::overlay_toggle_pause,
             commands::overlay_process_recording,
             commands::overlay_cancel,
-            commands::overlay_retry,
+            commands::overlay_reprocess_audio,
+            commands::overlay_retry_insertion,
+            commands::overlay_copy_last_result,
+            commands::overlay_start_new_recording,
             commands::overlay_hide,
+            commands::overlay_session_snapshot,
+            commands::overlay_insert_result,
             commands::copy_text,
             commands::history_list,
             commands::history_copy,
@@ -80,10 +76,7 @@ pub fn run() {
             commands::open_history,
             commands::close_history,
             commands::open_settings,
-            commands::test_text_insertion,
-            commands::set_start_recording_on_open,
             commands::set_start_with_windows,
-            commands::get_transcript_hint,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -106,27 +99,26 @@ pub fn run() {
             }
 
             // ---- Global shortcut ----
-            shortcut::reregister(&app.handle(), &settings_snapshot)
-                .map_err(|e| {
-                    eprintln!("shortcut registration failed: {e}");
-                })
-                .ok();
+            if let Err(error) = shortcut::reregister(app.handle(), &settings_snapshot) {
+                log::error!("shortcut registration failed: {error}");
+                let _ = tray::show_settings(app.handle());
+            }
 
             // ---- Onboarding: show settings on first run (no API key, not launched via autostart) ----
             let is_autostart = std::env::args().any(|arg| arg == "--autostart");
-            if is_autostart {
-                // Autostart skips onboarding, so warm the credential cache off the UI thread.
-                // The cache serializes concurrent first loads if recording starts immediately.
-                let settings_for_warm = settings_store.clone();
-                tauri::async_runtime::spawn_blocking(move || {
-                    let _ = settings_for_warm.api_key_set();
-                });
-            } else if !settings_store.api_key_set() {
-                if let Some(w) = app.get_webview_window("settings") {
-                    let _ = w.show();
-                    let _ = w.set_focus();
+            // Credential Manager access may involve IPC and disk work. Keep it off the
+            // setup/UI thread, then lazily create Settings only when onboarding is needed.
+            let settings_for_key_check = settings_store.clone();
+            let app_for_onboarding = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let key_set =
+                    tokio::task::spawn_blocking(move || settings_for_key_check.api_key_set())
+                        .await
+                        .unwrap_or(false);
+                if !is_autostart && !key_set {
+                    let _ = tray::show_settings(&app_for_onboarding);
                 }
-            }
+            });
 
             Ok(())
         })

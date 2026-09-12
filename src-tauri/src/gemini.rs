@@ -2,10 +2,19 @@ use serde_json::{json, Value};
 
 use crate::error::{AppError, AppResult};
 use crate::settings::SettingsStore;
-use crate::types::GeminiModelInfo;
+use crate::types::{GeminiModelInfo, GeminiResult};
 
 const API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta";
 const PREWARM_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+async fn wait_for_cancellation<F>(is_cancelled: F)
+where
+    F: Fn() -> bool + Copy,
+{
+    while !is_cancelled() {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
 
 fn claim_prewarm(
     last: &mut Option<std::time::Instant>,
@@ -104,48 +113,58 @@ impl GeminiClient {
         Ok(url)
     }
 
-    /// POST generateContent with inline base64 WAV audio. The API key is
+    /// POST generateContent with inline base64 FLAC audio. The API key is
     /// sent via the `x-goog-api-key` header (not a query param, which could
     /// leak into logs). If the primary model encounters an error, it tries
     /// configured fallback models in sequence.
-    pub async fn transcribe_and_respond(
+    pub async fn transcribe_and_respond<C>(
         &self,
         settings: &SettingsStore,
-        audio_wav: &[u8],
+        audio: &[u8],
         settings_snapshot: &crate::types::AppSettings,
-    ) -> AppResult<String> {
+        mut on_attempt: impl FnMut(usize, usize, &str),
+        is_cancelled: C,
+    ) -> AppResult<GeminiResult>
+    where
+        C: Fn() -> bool + Copy + Send + Sync,
+    {
         let key_lookup_started = std::time::Instant::now();
         let api_key = settings.get_api_key()?;
         let key_lookup_ms = key_lookup_started.elapsed().as_millis();
         let models = settings_snapshot.model_chain();
         let base64_started = std::time::Instant::now();
-        let audio_b64 =
-            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, audio_wav);
+        let audio_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, audio);
         let base64_ms = base64_started.elapsed().as_millis();
         let primary_model = models.first().map(String::as_str).unwrap_or("<none>");
         log::debug!(
-            "gemini latency: model={} key_lookup_ms={} base64_ms={} wav_bytes={} base64_bytes={}",
+            "gemini latency: model={} key_lookup_ms={} base64_ms={} audio_bytes={} base64_bytes={}",
             primary_model,
             key_lookup_ms,
             base64_ms,
-            audio_wav.len(),
+            audio.len(),
             audio_b64.len()
         );
 
         let mut last_error = AppError::BadResponse;
         for (index, model_name) in models.iter().enumerate() {
-            match self
-                .generate_with_model(&api_key, model_name, &audio_b64, settings_snapshot)
-                .await
-            {
-                Ok(text) => {
+            if is_cancelled() {
+                return Err(AppError::Cancelled);
+            }
+            on_attempt(index + 1, models.len(), model_name);
+            let result = tokio::select! {
+                _ = wait_for_cancellation(is_cancelled) => Err(AppError::Cancelled),
+                result = self.generate_with_model(&api_key, model_name, &audio_b64, settings_snapshot) => result,
+            };
+            match result {
+                Ok(mut result) => {
+                    result.model = model_name.clone();
                     if index > 0 {
                         log::info!(
                             "Fallback model '{model_name}' succeeded on attempt {}",
                             index + 1
                         );
                     }
-                    return Ok(text);
+                    return Ok(result);
                 }
                 Err(err) => {
                     log::warn!(
@@ -164,7 +183,7 @@ impl GeminiClient {
         model: &str,
         audio_b64: &str,
         settings_snapshot: &crate::types::AppSettings,
-    ) -> AppResult<String> {
+    ) -> AppResult<GeminiResult> {
         let request_build_started = std::time::Instant::now();
         let url = self.url(&format!(
             "models/{}:generateContent",
@@ -190,14 +209,15 @@ impl GeminiClient {
                 "role": "user",
                 "parts": [
                     { "text": instructions_for(&settings_snapshot.language) },
-                    { "inline_data": { "mime_type": "audio/wav", "data": audio_b64 } }
+                    { "inline_data": { "mime_type": "audio/flac", "data": audio_b64 } }
                 ]
             }],
             "generationConfig": generation_config
         });
-        if !settings_snapshot.system_prompt.trim().is_empty() {
+        let system_prompt = selected_prompt(settings_snapshot);
+        if !system_prompt.is_empty() {
             body["systemInstruction"] = json!({
-                "parts": [{ "text": settings_snapshot.system_prompt }]
+                "parts": [{ "text": system_prompt }]
             });
         }
         let request_build_ms = request_build_started.elapsed().as_millis();
@@ -243,7 +263,7 @@ impl GeminiClient {
                 let retry_payload: Value =
                     retry_resp.json().await.map_err(|_| AppError::BadResponse)?;
                 if retry_status.is_success() {
-                    return extract_text(&retry_payload);
+                    return parse_payload(&retry_payload);
                 }
             }
 
@@ -257,25 +277,7 @@ impl GeminiClient {
             });
         }
 
-        extract_text(&payload)
-    }
-
-    /// Human-friendly Vietnamese wording for API failures, so the overlay
-    /// doesn't dump raw English API text at the user.
-    pub fn friendly_api_error(err: &AppError) -> Option<String> {
-        if let AppError::Api { status, message } = err {
-            let hint = match *status {
-                429 => "Vượt quá hạn mức (rate limit). Đợi khoảng một phút rồi thử lại, hoặc đổi sang model khác trong Cài đặt.",
-                503 => "Model này đang quá tải (lượng cầu lớn, thường chỉ tạm thời). Bấm 'Thử lại' hoặc đổi sang model khác trong Cài đặt (ví dụ gemini-2.5-flash).",
-                500 | 502 | 504 => "Lỗi tạm thời từ máy chủ Google. Bấm 'Thử lại' sau ít phút.",
-                400 => "Yêu cầu bị từ chối — kiểm tra lại model trong Cài đặt (model có thể không tồn tại hoặc không hỗ trợ âm thanh).",
-                401 | 403 => "API key không hợp lệ hoặc chưa được cấp quyền. Mở Cài đặt và kiểm tra lại API key.",
-                404 => "Model không tồn tại — mở Cài đặt, bấm 'Fetch models' và chọn model khác.",
-                _ => return Some(format!("Lỗi Gemini API ({status}): {message}")),
-            };
-            return Some(format!("{hint} Chi tiết: {message}"));
-        }
-        None
+        parse_payload(&payload)
     }
 
     /// GET the list of models the key can access; filter to those that
@@ -329,11 +331,28 @@ impl GeminiClient {
 }
 
 fn instructions_for(language: &str) -> String {
-    match language {
-        "auto" => "Transcribe the attached speech, then respond to it as instructed by your system role. Reply in the same language the user spoke.".into(),
-        other => format!(
-            "Transcribe the attached speech, then respond to it as instructed by your system role. Reply in {other}."
-        ),
+    let language_instruction = match language {
+        "auto" => "Reply in the same language the user spoke.".to_string(),
+        other => format!("Reply in {other}."),
+    };
+    format!(
+        "Transcribe the attached speech and produce the requested result. {language_instruction} Return only valid JSON with exactly these string fields: {{\"transcript\":\"...\",\"result\":\"...\"}}."
+    )
+}
+
+fn selected_prompt(settings: &crate::types::AppSettings) -> String {
+    let profile_prompt = settings
+        .prompt_profiles
+        .iter()
+        .find(|profile| profile.id == settings.prompt_profile_id)
+        .map(|profile| profile.prompt.trim())
+        .filter(|prompt| !prompt.is_empty());
+    let system_prompt = settings.system_prompt.trim();
+
+    match (profile_prompt, system_prompt.is_empty()) {
+        (Some(profile), false) => format!("{profile}\n\n{system_prompt}"),
+        (Some(profile), true) => profile.to_string(),
+        (None, _) => system_prompt.to_string(),
     }
 }
 
@@ -357,10 +376,113 @@ fn extract_text(payload: &Value) -> AppResult<String> {
     Ok(text)
 }
 
+fn parse_payload(payload: &Value) -> AppResult<GeminiResult> {
+    parse_model_text(&extract_text(payload)?)
+}
+
+fn parse_model_text(text: &str) -> AppResult<GeminiResult> {
+    let trimmed = text.trim();
+    let json_text = strip_json_fence(trimmed);
+    if let Ok(value) = serde_json::from_str::<Value>(json_text) {
+        if let (Some(transcript), Some(result)) = (
+            value.get("transcript").and_then(Value::as_str),
+            value.get("result").and_then(Value::as_str),
+        ) {
+            return Ok(GeminiResult {
+                transcript: transcript.to_string(),
+                result: result.to_string(),
+                model: String::new(),
+            });
+        }
+        return Ok(GeminiResult {
+            transcript: value
+                .get("transcript")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            result: trimmed.to_string(),
+            model: String::new(),
+        });
+    }
+    if trimmed.is_empty() {
+        return Err(AppError::BadResponse);
+    }
+    Ok(GeminiResult {
+        transcript: trimmed.to_string(),
+        result: trimmed.to_string(),
+        model: String::new(),
+    })
+}
+
+fn strip_json_fence(text: &str) -> &str {
+    let Some(body) = text
+        .strip_prefix("```json")
+        .or_else(|| text.strip_prefix("```JSON"))
+    else {
+        return text;
+    };
+    body.strip_suffix("```").unwrap_or(body).trim()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn parses_structured_result_and_preserves_legacy_string() {
+        let structured =
+            parse_model_text(r#"{"transcript":"hello there","result":"Hello there!"}"#).unwrap();
+        assert_eq!(structured.transcript, "hello there");
+        assert_eq!(structured.result, "Hello there!");
+
+        let fenced =
+            parse_model_text("```json\n{\"transcript\":\"hello\",\"result\":\"Hi!\"}\n```")
+                .unwrap();
+        assert_eq!(fenced.transcript, "hello");
+        assert_eq!(fenced.result, "Hi!");
+
+        let incomplete = parse_model_text(r#"{"result":"missing transcript"}"#).unwrap();
+        assert_eq!(incomplete.transcript, "");
+        assert_eq!(incomplete.result, r#"{"result":"missing transcript"}"#);
+
+        let legacy = parse_model_text("legacy plain text").unwrap();
+        assert_eq!(legacy.transcript, "legacy plain text");
+        assert_eq!(legacy.result, "legacy plain text");
+    }
+
+    #[test]
+    fn selected_prompt_preserves_legacy_instructions_without_a_profile() {
+        let mut settings = crate::types::AppSettings {
+            system_prompt: "legacy instructions".into(),
+            ..Default::default()
+        };
+        settings.prompt_profile_id.clear();
+        assert_eq!(selected_prompt(&settings), "legacy instructions");
+
+        settings.prompt_profile_id = "email".into();
+        assert_eq!(
+            selected_prompt(&settings),
+            "Turn the transcript into a concise, polished email message.\n\nlegacy instructions"
+        );
+
+        settings.prompt_profile_id = "missing".into();
+        assert_eq!(selected_prompt(&settings), "legacy instructions");
+    }
+
+    #[test]
+    fn selected_prompt_keeps_profile_and_editable_system_instructions_effective() {
+        let settings = crate::types::AppSettings {
+            prompt_profile_id: "email".into(),
+            system_prompt: "Use a warm, professional tone.".into(),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            selected_prompt(&settings),
+            "Turn the transcript into a concise, polished email message.\n\nUse a warm, professional tone."
+        );
+    }
 
     #[test]
     fn prewarm_throttle_allows_first_skips_recent_and_allows_later() {

@@ -10,18 +10,24 @@ import {
 } from "./useOverlaySession";
 
 vi.mock("@/lib/overlay", () => ({
+  frontendErrorFromRejection: (error: unknown) => error,
   onOverlayState: vi.fn(),
   onOverlayDismiss: vi.fn(),
   overlayApi: {
+    getSnapshot: vi.fn(),
     toggle: vi.fn(),
     startRecording: vi.fn(),
     togglePause: vi.fn(),
     processRecording: vi.fn(),
     cancel: vi.fn(),
-    retry: vi.fn(),
+    reprocessAudio: vi.fn(),
+    retryInsertion: vi.fn(),
+    copyLastResult: vi.fn(),
+    startNewRecording: vi.fn(),
     hide: vi.fn(),
     openSettings: vi.fn(),
     copyText: vi.fn(),
+    insertResult: vi.fn(),
   },
 }));
 
@@ -35,6 +41,132 @@ describe("useOverlaySession dismissal lifecycle", () => {
     vi.clearAllMocks();
     vi.mocked(overlayApi.cancel).mockResolvedValue(undefined);
     vi.mocked(overlayApi.hide).mockResolvedValue(undefined);
+    vi.mocked(overlayApi.getSnapshot).mockResolvedValue(null);
+  });
+
+  it("subscribes before reading the current session snapshot", async () => {
+    const order: string[] = [];
+    vi.mocked(onOverlayState).mockImplementation(async () => {
+      order.push("subscribe");
+      return () => {};
+    });
+    vi.mocked(onOverlayDismiss).mockResolvedValue(() => {});
+    vi.mocked(overlayApi.getSnapshot).mockImplementation(async () => {
+      order.push("snapshot");
+      return { session_id: 4, phase: "opening", device_name: null };
+    });
+
+    const { result } = renderHook(() => useOverlaySession());
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    expect(order).toEqual(["subscribe", "snapshot"]);
+    expect(result.current.model.state.phase).toBe("opening");
+  });
+
+  it("does not let a same-session stale snapshot overwrite a newer live event", async () => {
+    let listener: ((event: OverlayEvent) => void) | undefined;
+    let resolveSnapshot: ((event: OverlayEvent | null) => void) | undefined;
+    vi.mocked(onOverlayState).mockImplementation(async (cb) => {
+      listener = cb;
+      return () => {};
+    });
+    vi.mocked(onOverlayDismiss).mockResolvedValue(() => {});
+    vi.mocked(overlayApi.getSnapshot).mockImplementation(
+      () => new Promise((resolve) => { resolveSnapshot = resolve; }),
+    );
+
+    const { result } = renderHook(() => useOverlaySession());
+    await act(async () => { await Promise.resolve(); });
+    act(() => {
+      listener?.({ session_id: 21, phase: "recording", elapsed_ms: 100, level: 5 });
+    });
+    await act(async () => {
+      resolveSnapshot?.({ session_id: 21, phase: "opening", device_name: null });
+      await Promise.resolve();
+    });
+
+    expect(result.current.model.state.phase).toBe("recording");
+  });
+
+  it("does not let a lower-session snapshot overwrite a newer live event", async () => {
+    let listener: ((event: OverlayEvent) => void) | undefined;
+    let resolveSnapshot: ((event: OverlayEvent | null) => void) | undefined;
+    vi.mocked(onOverlayState).mockImplementation(async (cb) => {
+      listener = cb;
+      return () => {};
+    });
+    vi.mocked(onOverlayDismiss).mockResolvedValue(() => {});
+    vi.mocked(overlayApi.getSnapshot).mockImplementation(
+      () => new Promise((resolve) => { resolveSnapshot = resolve; }),
+    );
+
+    const { result } = renderHook(() => useOverlaySession());
+    await act(async () => { await Promise.resolve(); });
+    act(() => {
+      listener?.({ session_id: 22, phase: "recording", elapsed_ms: 100, level: 5 });
+    });
+    await act(async () => {
+      resolveSnapshot?.({ session_id: 21, phase: "opening", device_name: null });
+      await Promise.resolve();
+    });
+
+    expect(result.current.model.sessionId).toBe(22);
+    expect(result.current.model.state.phase).toBe("recording");
+  });
+
+  it("surfaces copy failures as typed overlay errors", async () => {
+    let listener: ((event: OverlayEvent) => void) | undefined;
+    vi.mocked(onOverlayState).mockImplementation(async (cb) => {
+      listener = cb;
+      return () => {};
+    });
+    vi.mocked(onOverlayDismiss).mockResolvedValue(() => {});
+    vi.mocked(overlayApi.copyText).mockRejectedValue({
+      code: "clipboard_failed",
+      recoverable: true,
+      detail: "clipboard unavailable",
+    });
+
+    const { result } = renderHook(() => useOverlaySession());
+    act(() => {
+      listener?.({
+        session_id: 23,
+        phase: "success",
+        text: "hello",
+        pasted: false,
+        copied: false,
+        output: "preview",
+      });
+    });
+
+    await act(async () => {
+      await result.current.copyText("hello");
+    });
+
+    expect(result.current.model.state).toMatchObject({
+      phase: "error",
+      error: { code: "clipboard_failed" },
+    });
+  });
+
+  it("surfaces a rejected start command instead of leaving an unhandled promise", async () => {
+    vi.mocked(onOverlayState).mockResolvedValue(() => {});
+    vi.mocked(onOverlayDismiss).mockResolvedValue(() => {});
+    vi.mocked(overlayApi.startRecording).mockRejectedValue({
+      code: "microphone_device",
+      recoverable: true,
+      detail: "device unavailable",
+    });
+
+    const { result } = renderHook(() => useOverlaySession());
+    await act(async () => {
+      await result.current.startRecording();
+    });
+
+    expect(result.current.model.state).toMatchObject({
+      phase: "error",
+      error: { code: "microphone_device" },
+    });
   });
 
   afterEach(() => {
@@ -58,6 +190,7 @@ describe("useOverlaySession dismissal lifecycle", () => {
         text: "hello",
         pasted: true,
         copied: true,
+        output: "inserted",
       });
     });
     act(() => {
@@ -145,6 +278,85 @@ describe("useOverlaySession dismissal lifecycle", () => {
     await act(async () => {
       resolvePause?.();
       await firstPause;
+    });
+  });
+
+  it("deduplicates rapid retry and insert requests", () => {
+    let listener: ((event: OverlayEvent) => void) | undefined;
+    vi.mocked(onOverlayState).mockImplementation(async (cb) => {
+      listener = cb;
+      return () => {};
+    });
+    vi.mocked(onOverlayDismiss).mockResolvedValue(() => {});
+    vi.mocked(overlayApi.reprocessAudio).mockImplementation(() => new Promise<void>(() => {}));
+    vi.mocked(overlayApi.retryInsertion).mockImplementation(() => new Promise<void>(() => {}));
+    vi.mocked(overlayApi.startNewRecording).mockImplementation(() => new Promise<void>(() => {}));
+    vi.mocked(overlayApi.insertResult).mockImplementation(() => new Promise<void>(() => {}));
+
+    const { result } = renderHook(() => useOverlaySession());
+    act(() => {
+      listener?.({ session_id: 31, phase: "success", text: "hello", pasted: false, copied: true, output: "copied" });
+    });
+    act(() => {
+      void result.current.reprocessAudio();
+      void result.current.retryInsertion();
+      void result.current.startNewRecording();
+      void result.current.insertResult("hello");
+      void result.current.insertResult("hello");
+    });
+
+    expect(overlayApi.reprocessAudio).toHaveBeenCalledTimes(1);
+    expect(overlayApi.retryInsertion).not.toHaveBeenCalled();
+    expect(overlayApi.startNewRecording).not.toHaveBeenCalled();
+    expect(overlayApi.insertResult).not.toHaveBeenCalled();
+  });
+
+  it("passes the current preview text to insertion retry", () => {
+    let listener: ((event: OverlayEvent) => void) | undefined;
+    vi.mocked(onOverlayState).mockImplementation(async (cb) => {
+      listener = cb;
+      return () => {};
+    });
+    vi.mocked(onOverlayDismiss).mockResolvedValue(() => {});
+    vi.mocked(overlayApi.retryInsertion).mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useOverlaySession());
+    act(() => {
+      listener?.({ session_id: 33, phase: "success", text: "original", pasted: false, copied: false, output: "preview" });
+      void result.current.retryInsertion("edited preview");
+    });
+
+    expect(overlayApi.retryInsertion).toHaveBeenCalledWith("edited preview");
+  });
+
+  it("surfaces typed recovery command rejection with its reason", async () => {
+    let listener: ((event: OverlayEvent) => void) | undefined;
+    vi.mocked(onOverlayState).mockImplementation(async (cb) => {
+      listener = cb;
+      return () => {};
+    });
+    vi.mocked(onOverlayDismiss).mockResolvedValue(() => {});
+    vi.mocked(overlayApi.retryInsertion).mockRejectedValue({
+      code: "insertion_failed",
+      recoverable: true,
+      detail: "focus restore failed",
+    });
+
+    const { result } = renderHook(() => useOverlaySession());
+    act(() => {
+      listener?.({ session_id: 34, phase: "success", text: "hello", pasted: false, copied: false, output: "preview" });
+    });
+    await act(async () => {
+      await result.current.retryInsertion("hello");
+    });
+
+    expect(result.current.model.state).toEqual({
+      phase: "error",
+      error: {
+        code: "insertion_failed",
+        recoverable: true,
+        detail: "focus restore failed",
+      },
     });
   });
 
@@ -280,6 +492,7 @@ describe("useOverlaySession dismissal lifecycle", () => {
         text: "done",
         pasted: true,
         copied: true,
+        output: "inserted",
       });
     });
     act(() => {
@@ -322,6 +535,7 @@ describe("useOverlaySession dismissal lifecycle", () => {
         text: "hello",
         pasted: true,
         copied: true,
+        output: "inserted",
       });
     });
     act(() => {

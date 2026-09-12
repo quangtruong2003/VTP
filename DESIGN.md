@@ -9,19 +9,22 @@ assistant built with **Rust + Tauri 2** and **React + TypeScript + shadcn/ui**.
 
 ### Primary flow (happy path)
 
-1. User presses **Ctrl+Space** anywhere in Windows/macOS.
+1. User presses **CmdOrCtrl+Shift+Space** anywhere in Windows/macOS.
 2. The app captures the current foreground window *before* anything shows
    (this is the "insert target").
-3. A compact overlay appears near the cursor — **without stealing focus on
-   Windows** (`SWP_SHOWWINDOW | SWP_NOACTIVATE`) — and recording starts
-   immediately (configurable).
-4. Live feedback: elapsed time + input level meter, pushed at 4 Hz from
-   Rust (no polling from JS).
-5. User presses **Space** (or clicks **Done**) to stop.
-6. Rust encodes the samples to **16-bit PCM WAV (16 kHz mono)** and calls
+3. A compact overlay appears at the bottom-center of the target app's monitor (falling back to the cursor monitor, then the primary monitor) — **without stealing focus on
+  Windows** (`SWP_SHOWWINDOW | SWP_NOACTIVATE`) — recording starts as part of
+  that first shortcut press.
+4. Live feedback: elapsed time + input level meter, pushed every 100 ms (10 Hz)
+  from Rust (no polling from JS; the frontend smooths the meter between events).
+5. In Toggle mode, the user presses the main shortcut again (or clicks
+  **Done**) to stop. In Hold-to-talk mode, releasing the shortcut stops recording.
+6. The capture thread opens the microphone in its native default format. On
+  stop, Rust downmixes/resamples the samples to **16-bit PCM WAV (16 kHz mono)**
+  and calls
    Gemini `generateContent` with the audio inline (base64) — one network
-   round trip, no Files API, no upload step visible to the user beyond the
-   "Uploading" state.
+   round trip, no Files API, and no separate upload step visible to the user;
+   the overlay keeps one calm Encoding/Processing state for this work.
 7. Response arrives → Rust (a) writes it to the clipboard, (b) restores
    focus to the target app, (c) types it at the caret (enigo), falling back
    to Ctrl+V if typing is denied.
@@ -50,8 +53,9 @@ assistant built with **Rust + Tauri 2** and **React + TypeScript + shadcn/ui**.
 │  global-shortcut plugin ──► overlay.rs::toggle()                           │
 │        │                                       │                           │
 │        │                    1. focus.rs::capture_previous_focus()          │
-│        │                    2. show overlay near cursor (no activate)      │
-│        │                    3. session::begin_recording()                  │
+│        │                    2. session::begin_recording()                  │
+│        │                    3. show overlay bottom-center on target        │
+│        │                       monitor (cursor/primary fallback; no activate)│
 │        ▼                                       │                           │
 │  ┌─ session.rs (orchestrator, single-flight) ──────────────────────────┐    │
 │  │  recorder.rs ──► capture thread (owns cpal stream, Send+Sync-safe) │    │
@@ -63,9 +67,9 @@ assistant built with **Rust + Tauri 2** and **React + TypeScript + shadcn/ui**.
 │  └────────────────────────────────────────────────────────────────────┘    │
 │        │ events (emit_to "overlay")         │ state                        │
 │        ▼                                    ▼                              │
-│  ┌─ overlay window ──┐              ┌─ settings window ─┐                 │
-│  │ React/shadcn     │◄──invoke────► │ React/shadcn      │                 │
-│  └──────────────────┘              └────────────────────┘                 │
+│  ┌─ overlay window ──┐  ┌─ settings window ─┐  ┌─ history window ─┐       │
+│  │ React/shadcn     │  │ React/shadcn      │  │ React/shadcn     │       │
+│  └──────────────────┘  └───────────────────┘  └──────────────────┘       │
 │  tray menu (Record / Settings / History / Quit)                            │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -78,9 +82,12 @@ Key decisions:
 - **Single-flight session**: a `tokio::Mutex<Option<Session>>` guarantees
   at most one recording/pipeline at a time; duplicate shortcut presses are
   idempotent.
-- **Event pushes, not polls**: Rust pushes `overlay://state` (idle /
-  recording{elapsed, level} / uploading / processing / success / error) —
-  the overlay re-renders only on state change.
+- **Event pushes, not polls**: Rust pushes `overlay://state` (opening /
+  recording{elapsed, level} / paused / encoding or processing / success /
+  error) every 100 ms while recording; the overlay re-renders only on state
+  change and smooths meter motion locally. The legacy `uploading` tag remains
+  accepted by the wire type for compatibility but is not emitted by the
+  current pipeline.
 - **Errors as values**: every command returns `Result<T, AppError>` which
   serializes to a human-readable string the overlay shows inline.
 
@@ -89,9 +96,9 @@ Key decisions:
 ```
 VoiceToPromptV2/
 ├─ package.json                 # React + shadcn/ui deps (npm)
-├─ vite.config.ts               # multi-entry build (overlay.html, settings.html)
+├─ vite.config.ts               # multi-entry build (overlay.html, settings.html, history.html)
 ├─ tsconfig.json
-├─ overlay.html / settings.html # window entry points
+├─ overlay.html / settings.html / history.html # window entry points
 ├─ src/
 │  ├─ index.css                 # Tailwind v4 theme tokens (dark-premium)
 │  ├─ overlay.tsx               # overlay window UI (states)
@@ -106,7 +113,7 @@ VoiceToPromptV2/
 │     └─ settings.ts             # invoke wrappers for settings commands
 └─ src-tauri/
    ├─ Cargo.toml
-   ├─ tauri.conf.json            # two windows + tray
+   ├─ tauri.conf.json            # three windows + tray
    ├─ capabilities/default.json # least-privilege ACL
    ├─ icons/                     # png/ico/icns
    └─ src/
@@ -155,16 +162,17 @@ Security properties:
   ever receives `api_key_set: boolean`. The key is used exclusively inside
   the Rust process, attached as the `x-goog-api-key` header (not a query
   parameter that could leak into logs).
-- **CSP + capabilities**: `capabilities/default.json` is an explicit
-  allow-list per window (no `default` wildcard beyond `core:default`
-  basics); clipboard, shortcuts, window controls are scoped. The settings
-  window cannot invoke overlay-only commands and vice versa (same ACL file,
-  but the Rust commands validate source by design).
+- **CSP + capabilities**: `capabilities/default.json` targets all three
+  windows with one shared permission set for core window/events, clipboard,
+  global shortcuts, opener, and autostart. It is not a per-window command
+  allow-list; Rust commands are globally registered and the UI keeps each
+  window's normal flow scoped.
 - **URL validation** in `gemini.rs`: http/https only; loopback, link-local
   (`169.254.*`, `.local`, `.internal`), and RFC1918 private ranges rejected
   (SSRF defense-in-depth).
-- **No audio persistence**: audio is discarded after the request; history
-  stores only response text.
+- **No audio persistence**: audio is discarded after the request; the current
+  session writes successful results with their transcript hint and model
+  metadata to History.
 - **Write-atomic settings**: settings.json is written to a tmp file then
   renamed so a crash can't leave a truncated file.
 
@@ -177,26 +185,33 @@ Rust owns all state; the webview is a projection.
 | Settings | `SettingsStore` (Mutex in managed state) | pushed via `settings://saved` after save |
 | API key | OS keyring | `api_key_set: boolean` only |
 | Session | `SessionManager.active: AsyncMutex<Option<Session>>` | drives `overlay://state` events |
-| Recording level/elapsed | capture thread atomics | pushed in `overlay://state` recording payload at 4 Hz |
+| Recording level/elapsed | capture thread atomics | pushed in `overlay://state` every 100 ms (10 Hz) |
 | History | JSONL file | `history_list` command + `history://changed` event |
 
 Event names (typed contract in `src/lib/types.ts`):
-`overlay://state`, `overlay://toast`, `settings://saved`,
-`history://changed`, `app://show-overlay`.
+`overlay://state`, `overlay://dismiss`, `settings://saved`,
+`settings://mic-level`, `history://changed`, `history://opened`,
+`app://settings-section`.
 
 Commands (the complete IPC surface):
-`get_public_settings`, `save_settings`, `set_api_key`, `delete_api_key`,
-`list_models`, `list_audio_devices`, `overlay_stop_recording`,
-`overlay_cancel`, `overlay_retry`, `overlay_copy_insert_result`,
-`overlay_hide`, `history_list`, `history_copy`, `history_clear`,
-`open_settings`, `test_text_insertion`, `set_start_recording_on_open`,
-`get_transcript_hint`.
+`get_public_settings`, `save_settings`, `set_shortcut`,
+`set_process_shortcut`, `set_cancel_shortcut`, `set_history_shortcut`,
+`set_settings_shortcut`, `platform_info`, `connect_api_key`,
+`delete_api_key`, `list_models`, `list_audio_devices`, `mic_test_start`,
+`mic_test_stop`, `overlay_toggle`, `overlay_start_recording`,
+`overlay_toggle_pause`, `overlay_process_recording`, `overlay_cancel`,
+`overlay_reprocess_audio`, `overlay_retry_insertion`, `overlay_copy_last_result`,
+`overlay_start_new_recording`, `overlay_hide`, `overlay_session_snapshot`,
+`overlay_insert_result`, `copy_text`, `history_list`, `history_copy`,
+`history_clear`, `history_delete`, `history_insert`, `open_history`,
+`close_history`, `open_settings`,
+`set_start_with_windows`.
 
 ## 7. Implementation phases
 
 | Phase | Scope | Status |
 |---|---|---|
-| P0 | Scaffold: Tauri 2 + Vite + Tailwind v4 + shadcn primitives, two windows, tray | ✅ |
+| P0 | Scaffold: Tauri 2 + Vite + Tailwind v4 + shadcn primitives, three windows, tray | ✅ |
 | P1 | Settings store + keyring + settings window (key, model fetch/select, prompt, params, language, shortcut, behavior) | ✅ |
 | P2 | Global shortcut + overlay positioning (no-activate) + overlay state machine | ✅ |
 | P3 | Audio capture (cpal, capture thread, lock-free queue, level meter) + WAV encode | ✅ |
@@ -211,7 +226,7 @@ Commands (the complete IPC surface):
 | Risk | Mitigation implemented |
 |---|---|
 | Global shortcut conflicts (Ctrl+Space is used by IMEs, esp. CJK input) | Shortcut is user-configurable; `reregister` unregisters old before new; failure surfaces at startup |
-| Audio capture latency / device quirks | Stream opened on demand in a dedicated thread; 16 kHz mono keeps payload small; level meter gives immediate "recording is live" feedback |
+| Audio capture latency / device quirks | Stream opens on demand in a dedicated thread using the device's native default format; stop-time downmix/resample produces 16 kHz mono WAV; the level meter gives immediate "recording is live" feedback |
 | WASAPI stream is `!Sync` → poison for managed state | Capture thread owns the stream; app-level handles are Send+Sync |
 | Text injection failing (elevated apps, games, terminals with raw input) | enigo typing → **Ctrl+V fallback** (clipboard already holds the result) + user-visible toast |
 | Windows foreground lock denies SetForegroundWindow | Same Ctrl+V fallback + result remains in overlay for manual paste |

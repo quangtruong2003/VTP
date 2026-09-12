@@ -63,6 +63,18 @@ describe("VoiceMeter", () => {
     expect(animation.pendingCount()).toBe(0);
   });
 
+  it("updates the accessible level immediately while bars interpolate", () => {
+    const animation = installAnimationFrame();
+    const { container, rerender } = render(<VoiceMeter level={0} locale="en" />);
+    const meter = container.firstElementChild as HTMLElement;
+
+    rerender(<VoiceMeter level={128} locale="en" />);
+
+    expect(meter).toHaveAttribute("aria-valuenow", expect.any(String));
+    expect(Number(meter.getAttribute("aria-valuenow"))).toBeGreaterThan(0);
+    expect(animation.pendingCount()).toBe(1);
+  });
+
   it("disables interpolation when reduced motion is requested", () => {
     vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: true })));
     const animation = installAnimationFrame();

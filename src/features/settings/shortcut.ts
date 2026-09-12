@@ -66,6 +66,9 @@ export function validateCandidate(
   if (!candidate.key) {
     return { ok: false, reason: "modifier_only" };
   }
+  if (!hasModifier && candidate.key === "Enter") {
+    return { ok: false, reason: "unsupported" };
+  }
   if (!hasModifier && !options.allowUnmodified) {
     return { ok: false, reason: "missing_modifier" };
   }

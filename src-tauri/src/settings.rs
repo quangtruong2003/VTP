@@ -8,6 +8,31 @@ use crate::types::AppSettings;
 const SERVICE: &str = "com.voicetoprompt.app";
 const KEY_ENTRY: &str = "gemini-api-key";
 
+fn read_settings_file(path: &std::path::Path) -> AppResult<AppSettings> {
+    if path.exists() {
+        let raw = fs::read_to_string(path)?;
+        let mut settings: AppSettings =
+            serde_json::from_str(&raw).map_err(|e| AppError::Settings(e.to_string()))?;
+        let mut migrated = false;
+        if settings
+            .process_shortcut
+            .trim()
+            .eq_ignore_ascii_case("enter")
+        {
+            settings.process_shortcut.clear();
+            migrated = true;
+        }
+        if migrated {
+            let json = serde_json::to_string_pretty(&settings)
+                .map_err(|e| AppError::Settings(e.to_string()))?;
+            fs::write(path, json)?;
+        }
+        Ok(settings)
+    } else {
+        Ok(AppSettings::default())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ApiKeyCache {
     Unloaded,
@@ -77,6 +102,7 @@ pub struct SettingsStore {
     path: PathBuf,
     settings: Mutex<AppSettings>,
     api_key_cache: Mutex<ApiKeyCache>,
+    shortcut_changes: Mutex<()>,
 }
 
 impl SettingsStore {
@@ -86,17 +112,17 @@ impl SettingsStore {
             .ok_or_else(|| AppError::Settings("cannot resolve data dir".into()))?;
         fs::create_dir_all(&dir)?;
         let path = dir.join("settings.json");
-        let settings = if path.exists() {
-            let raw = fs::read_to_string(&path)?;
-            serde_json::from_str(&raw).map_err(|e| AppError::Settings(e.to_string()))?
-        } else {
-            AppSettings::default()
-        };
+        let settings = read_settings_file(&path)?;
         Ok(Self {
             path,
             settings: Mutex::new(settings),
             api_key_cache: Mutex::new(ApiKeyCache::Unloaded),
+            shortcut_changes: Mutex::new(()),
         })
+    }
+
+    pub fn lock_shortcut_changes(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.shortcut_changes.lock().unwrap()
     }
 
     pub fn get(&self) -> AppSettings {
@@ -165,6 +191,74 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+
+    fn temp_path() -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("vtp_settings_{nanos}.json"))
+    }
+
+    #[test]
+    fn loading_legacy_both_false_settings_keeps_preview_mode() {
+        let path = temp_path();
+        let legacy = AppSettings {
+            copy_to_clipboard: false,
+            paste_automatically: false,
+            ..Default::default()
+        };
+        fs::write(&path, serde_json::to_string(&legacy).unwrap()).unwrap();
+
+        let loaded = read_settings_file(&path).unwrap();
+
+        assert!(!loaded.copy_to_clipboard);
+        assert!(!loaded.paste_automatically);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn saving_legacy_both_false_settings_keeps_preview_mode() {
+        let path = temp_path();
+        let legacy = AppSettings {
+            copy_to_clipboard: false,
+            paste_automatically: false,
+            ..Default::default()
+        };
+        let store = SettingsStore {
+            path: path.clone(),
+            settings: Mutex::new(legacy),
+            api_key_cache: Mutex::new(ApiKeyCache::Unloaded),
+            shortcut_changes: Mutex::new(()),
+        };
+
+        store
+            .update(|settings| settings.ui_locale = "en".into())
+            .unwrap();
+        let saved = read_settings_file(&path).unwrap();
+
+        assert!(!saved.copy_to_clipboard);
+        assert!(!saved.paste_automatically);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn loading_legacy_enter_process_shortcut_clears_it() {
+        let path = temp_path();
+        let legacy = AppSettings {
+            process_shortcut: "Enter".into(),
+            ..Default::default()
+        };
+        fs::write(&path, serde_json::to_string(&legacy).unwrap()).unwrap();
+
+        let loaded = read_settings_file(&path).unwrap();
+
+        assert!(loaded.process_shortcut.is_empty());
+        let persisted: AppSettings =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(persisted.process_shortcut.is_empty());
+        let _ = fs::remove_file(path);
+    }
 
     #[test]
     fn api_key_cache_hit_does_not_load_backend_twice() {

@@ -5,7 +5,7 @@ import { InlineNotice } from "@/components/inline-notice";
 import { SectionCard } from "@/components/section-card";
 import { SettingRow } from "@/components/setting-row";
 import { Switch } from "@/components/ui/switch";
-import { VoiceMeter } from "@/features/overlay/VoiceMeter";
+import { MicLevelIndicator } from "./MicLevelIndicator";
 import { ShortcutSection } from "./ShortcutSection";
 import { t, type UiLocale } from "@/lib/i18n";
 import type {
@@ -33,10 +33,11 @@ export function Onboarding({
   onSetSettingsShortcut,
   onShortcutCommitted,
   onTryNow,
+  onComplete,
 }: {
   settings: AppSettings;
   devices: AudioDeviceInfo[];
-  micLevel: number;
+  micLevel?: number;
   platformInfo: PlatformInfo;
   locale: UiLocale;
   connectApiKey: (key: string) => Promise<void>;
@@ -51,13 +52,20 @@ export function Onboarding({
   onSetSettingsShortcut: (shortcut: string) => Promise<PublicSettings>;
   onShortcutCommitted: (snapshot: PublicSettings) => void;
   onTryNow: () => void;
+  onComplete: () => Promise<void>;
 }) {
   const [step, setStep] = useState<1 | 2 | 3>(settings.api_key_set ? 2 : 1);
   const [apiKey, setApiKey] = useState("");
   const [connecting, setConnecting] = useState(false);
   const [connectError, setConnectError] = useState(false);
   const [testingMic, setTestingMic] = useState(false);
+  const [micBusy, setMicBusy] = useState(false);
   const [micError, setMicError] = useState(false);
+  const [continuing, setContinuing] = useState(false);
+  const [refreshingDevices, setRefreshingDevices] = useState(false);
+  const [deviceRefreshError, setDeviceRefreshError] = useState(false);
+  const [completing, setCompleting] = useState(false);
+  const [completeError, setCompleteError] = useState(false);
   const micTestOwned = useRef(false);
   const testTargetRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -65,7 +73,7 @@ export function Onboarding({
     () => () => {
       if (micTestOwned.current) {
         micTestOwned.current = false;
-        void onMicTestStop();
+        void onMicTestStop().catch(() => {});
       }
     },
     [onMicTestStop],
@@ -88,29 +96,68 @@ export function Onboarding({
   };
 
   const toggleMicTest = async () => {
+    if (micBusy) return;
     setMicError(false);
-    if (testingMic) {
-      micTestOwned.current = false;
-      await onMicTestStop();
-      setTestingMic(false);
-      return;
-    }
+    setMicBusy(true);
     try {
-      await onMicTestStart(settings.device_name);
-      micTestOwned.current = true;
-      setTestingMic(true);
+      if (testingMic) {
+        await onMicTestStop();
+        micTestOwned.current = false;
+        setTestingMic(false);
+      } else {
+        await onMicTestStart(settings.device_name);
+        micTestOwned.current = true;
+        setTestingMic(true);
+      }
     } catch {
       setMicError(true);
+    } finally {
+      setMicBusy(false);
+    }
+  };
+
+  const refreshDevices = async () => {
+    if (refreshingDevices) return;
+    setDeviceRefreshError(false);
+    setRefreshingDevices(true);
+    try {
+      await onRefreshDevices();
+    } catch {
+      setDeviceRefreshError(true);
+    } finally {
+      setRefreshingDevices(false);
     }
   };
 
   const continueFromMic = async () => {
-    if (micTestOwned.current) {
-      micTestOwned.current = false;
-      await onMicTestStop();
-      setTestingMic(false);
+    if (continuing || micBusy) return;
+    setMicError(false);
+    setContinuing(true);
+    try {
+      if (micTestOwned.current) {
+        await onMicTestStop();
+        micTestOwned.current = false;
+        setTestingMic(false);
+      }
+      setStep(3);
+    } catch {
+      setMicError(true);
+    } finally {
+      setContinuing(false);
     }
-    setStep(3);
+  };
+
+  const complete = async () => {
+    if (completing) return;
+    setCompleteError(false);
+    setCompleting(true);
+    try {
+      await onComplete();
+    } catch {
+      setCompleteError(true);
+    } finally {
+      setCompleting(false);
+    }
   };
 
   const tryNow = () => {
@@ -164,8 +211,9 @@ export function Onboarding({
                   type="button"
                   onClick={() => void connect()}
                   disabled={!apiKey.trim() || connecting}
+                  aria-busy={connecting}
                 >
-                  {t(locale, "settings.connect")}
+                  {connecting ? t(locale, "settings.connecting") : t(locale, "settings.connect")}
                 </Button>
               </div>
               {connectError ? (
@@ -207,11 +255,19 @@ export function Onboarding({
                     type="button"
                     size="sm"
                     variant="ghost"
-                    onClick={() => void onRefreshDevices()}
+                    onClick={() => void refreshDevices()}
+                    disabled={refreshingDevices}
+                    aria-busy={refreshingDevices}
                   >
                     {t(locale, "settings.refreshDevices")}
                   </Button>
-                  <Button type="button" variant="outline" onClick={() => void toggleMicTest()}>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => void toggleMicTest()}
+                    disabled={micBusy}
+                    aria-busy={micBusy}
+                  >
                     <Mic2 className="size-4" aria-hidden="true" />
                     {t(
                       locale,
@@ -219,15 +275,12 @@ export function Onboarding({
                     )}
                   </Button>
                 </div>
+                {deviceRefreshError ? (
+                  <InlineNotice tone="error">{t(locale, "settings.refreshDevicesFailed")}</InlineNotice>
+                ) : null}
 
                 <div className="rounded-lg border border-border bg-secondary/30 px-4 py-3">
-                  <VoiceMeter level={micLevel} locale={locale} />
-                  <div className="mt-1 text-xs text-muted-foreground">
-                    {t(
-                      locale,
-                      micLevel > 12 ? "settings.receivingAudio" : "settings.noAudioYet",
-                    )}
-                  </div>
+                  <MicLevelIndicator locale={locale} initialLevel={micLevel} />
                 </div>
                 {micError ? (
                   <InlineNotice tone="error">{t(locale, "settings.micTestFailed")}</InlineNotice>
@@ -235,7 +288,12 @@ export function Onboarding({
               </div>
             </SectionCard>
             <div className="flex justify-end">
-              <Button type="button" onClick={() => void continueFromMic()}>
+              <Button
+                type="button"
+                onClick={() => void continueFromMic()}
+                disabled={continuing || micBusy}
+                aria-busy={continuing}
+              >
                 {t(locale, "settings.continue")}
               </Button>
             </div>
@@ -250,6 +308,9 @@ export function Onboarding({
                 {t(locale, "settings.pressTwiceHint")}
               </div>
             </div>
+            {completeError ? (
+              <InlineNotice tone="error">{t(locale, "settings.completeFailed")}</InlineNotice>
+            ) : null}
 
             <ShortcutSection
               settings={settings}
@@ -261,6 +322,7 @@ export function Onboarding({
               onSetHistoryShortcut={onSetHistoryShortcut}
               onSetSettingsShortcut={onSetSettingsShortcut}
               onCommitted={onShortcutCommitted}
+              onUpdateImmediate={onUpdateImmediate}
             />
 
             <SectionCard
@@ -275,7 +337,11 @@ export function Onboarding({
                   aria-label={t(locale, "settings.insertAutomatically")}
                   checked={settings.paste_automatically}
                   onCheckedChange={(checked) =>
-                    onUpdateImmediate({ paste_automatically: checked })
+                    onUpdateImmediate(
+                      !checked && !settings.copy_to_clipboard
+                        ? { paste_automatically: false, copy_to_clipboard: true }
+                        : { paste_automatically: checked },
+                    )
                   }
                 />
               </SettingRow>
@@ -301,6 +367,11 @@ export function Onboarding({
                 </div>
               </div>
             </SectionCard>
+            <div className="flex justify-end">
+              <Button type="button" onClick={() => void complete()} disabled={completing} aria-busy={completing}>
+                {t(locale, "settings.complete")}
+              </Button>
+            </div>
           </div>
         ) : null}
       </div>

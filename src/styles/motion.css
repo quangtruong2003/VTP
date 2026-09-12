@@ -94,8 +94,15 @@
 
   .overlay-surface[data-lifecycle="visible"],
   .overlay-surface[data-lifecycle="exiting"],
-  .overlay-state-content {
+  .overlay-state-content,
+  .animate-pulse,
+  .animate-in {
     animation-duration: 100ms;
+  }
+
+  .animate-pulse,
+  .animate-in {
+    animation: none !important;
   }
 
   .overlay-processing-bar {

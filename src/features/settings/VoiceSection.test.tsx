@@ -14,13 +14,13 @@ const settings: AppSettings = {
   max_output_tokens: 2048,
   language: "auto",
   shortcut: "CmdOrCtrl+Shift+Space",
+  shortcut_mode: "toggle",
   process_shortcut: "Enter",
   cancel_shortcut: "Escape",
   copy_to_clipboard: true,
   paste_automatically: true,
   device_name: null,
   show_history: true,
-  start_recording_on_open: true,
   ui_locale: "en",
 };
 
@@ -44,7 +44,6 @@ const platform: PlatformInfo = { os: "windows", primary_modifier: "Ctrl" };
     expect(screen.getByText("System default")).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "Mic A (default)" })).toBeInTheDocument();
     expect(screen.getByText("Receiving audio")).toBeInTheDocument();
-    expect(screen.queryByText("Start recording immediately")).not.toBeInTheDocument();
   });
 
   it("stops an active microphone test when the voice section unmounts", async () => {
@@ -67,6 +66,52 @@ const platform: PlatformInfo = { os: "windows", primary_modifier: "Ctrl" };
     expect(stop).toHaveBeenCalledTimes(1);
   });
 
+  it("shows an inline error when the microphone test cannot start", async () => {
+    const start = vi.fn(async () => {
+      throw new Error("device unavailable");
+    });
+    render(
+      <VoiceSection
+        settings={settings}
+        devices={[]}
+        micLevel={0}
+        locale="en"
+        onUpdateImmediate={() => {}}
+        onRefreshDevices={async () => []}
+        onMicTestStart={start}
+        onMicTestStop={async () => {}}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Test microphone" }));
+
+    expect(await screen.findByText("Couldn't start the microphone test. Check the selected device.")).toBeInTheDocument();
+    expect(start).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows an inline error when refreshing devices fails", async () => {
+    const refresh = vi.fn(async () => {
+      throw new Error("device enumeration failed");
+    });
+    render(
+      <VoiceSection
+        settings={settings}
+        devices={[]}
+        micLevel={0}
+        locale="en"
+        onUpdateImmediate={() => {}}
+        onRefreshDevices={refresh}
+        onMicTestStart={async () => {}}
+        onMicTestStop={async () => {}}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Refresh devices" }));
+
+    expect(await screen.findByText("Couldn't refresh the microphone list.")).toBeInTheDocument();
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
   it("general readiness keeps legacy manual-start preference out of the UI", () => {
     render(
       <GeneralSection
@@ -81,7 +126,6 @@ const platform: PlatformInfo = { os: "windows", primary_modifier: "Ctrl" };
 
     expect(screen.getByText("Gemini connected")).toBeInTheDocument();
     expect(screen.getByText("Ctrl")).toBeInTheDocument();
-    expect(screen.queryByRole("switch", { name: "Start recording immediately" })).not.toBeInTheDocument();
   });
 
   it("general section renders Start with Windows toggle and updates immediately", async () => {
@@ -113,5 +157,28 @@ const platform: PlatformInfo = { os: "windows", primary_modifier: "Ctrl" };
 
     await userEvent.click(screen.getByRole("switch", { name: "Keep result in clipboard" }));
     expect(update).toHaveBeenCalledWith({ copy_to_clipboard: false });
+  });
+
+  it("keeps at least one automatic output path enabled", async () => {
+    const update = vi.fn();
+    const { rerender } = render(
+      <OutputSection settings={settings} locale="en" onUpdateImmediate={update} />,
+    );
+
+    await userEvent.click(screen.getByRole("switch", { name: "Keep result in clipboard" }));
+    expect(update).toHaveBeenLastCalledWith({ copy_to_clipboard: false });
+
+    rerender(
+      <OutputSection
+        settings={{ ...settings, copy_to_clipboard: false }}
+        locale="en"
+        onUpdateImmediate={update}
+      />,
+    );
+    await userEvent.click(screen.getByRole("switch", { name: "Insert result automatically" }));
+    expect(update).toHaveBeenLastCalledWith({
+      paste_automatically: false,
+      copy_to_clipboard: true,
+    });
   });
 });
